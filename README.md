@@ -5,17 +5,6 @@ works. For a one-line-per-script index with exact CLI flags, output paths, and
 requirements, see **`README.txt`** in this same folder — that stays the
 authoritative per-script reference.
 
-> **Note (2026-07-23 rename):** the original `run_fc_pipeline.py` (CIFTI-cortex,
-> 427-parcel, `.npy` output) and its batch counterpart `run_fc_pipeline_batch.py`
-> have been removed. `run_fc_pipeline_v2.py` was renamed to `run_fc_pipeline_v1.py`,
-> and `run_fc_pipeline_v3.py` was renamed to `run_fc_pipeline_v2.py` — filenames
-> only, no code changes, so each script's internal run-count-log and
-> cached-timeseries filenames still use their pre-rename names (called out where
-> relevant below). `cross_sectional_analysis.py` was likewise renamed to
-> `cross_sectional_analysis_v1.py`. `run_fc_pipeline_batch_v2.py` was rebuilt
-> from scratch as a batch driver for the *current* `run_fc_pipeline_v2.py`
-> (HCPex-only) — it is a different script than the name used to refer to. A new
-> `cross_sectional_analysis_batch_v2.py` was also added.
 
 ---
 
