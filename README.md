@@ -4,31 +4,6 @@ This is the single reference for this folder: how the data is organized, how
 each script works, the exact command to run it, every output path, and every
 requirement.
 
-> **Note (2026-07-24):** README.txt's per-script command/output/requirements
-> index has been fully merged into this file, and README.txt has been
-> retired (its original content is preserved at `README.txt.bak` in this
-> folder in case anything needs cross-checking). This file is now the sole
-> authoritative reference for this folder.
-
-> **Note (2026-07-23 rename):** the original `run_fc_pipeline.py` (CIFTI-cortex,
-> 427-parcel, `.npy` output) and its batch counterpart `run_fc_pipeline_batch.py`
-> have been removed. `run_fc_pipeline_v2.py` was renamed to `run_fc_pipeline_v1.py`,
-> and `run_fc_pipeline_v3.py` was renamed to `run_fc_pipeline_v2.py` — filenames
-> only, no code changes, so each script's internal run-count-log and
-> cached-timeseries filenames still use their pre-rename names (called out where
-> relevant below). `cross_sectional_analysis.py` was likewise renamed to
-> `cross_sectional_analysis_v1.py`. `run_fc_pipeline_batch_v2.py` was rebuilt
-> from scratch as a batch driver for the *current* `run_fc_pipeline_v2.py`
-> (HCPex-only) — it is a different script than the name used to refer to. A new
-> `cross_sectional_analysis_batch_v2.py` was also added.
-
-Also present in this folder but not covered below: the one-off pptx-editing
-scripts that built up `rsfMRI_processing_summary_with_anat_appendix.pptx`
-slide by slide have been removed — their effects are already permanently
-baked into that presentation, so nothing currently visible depends on them
-(see `SESSION_SUMMARY.md` for what each one did). The two *reusable* pptx
-builders (Section 7 below) were kept, since those regenerate their decks
-from scratch and are meant to be re-run whenever a source script changes.
 
 ### Python dependencies
 
