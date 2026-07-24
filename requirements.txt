@@ -1,0 +1,17 @@
+# Install with: pip install -r requirements.txt
+numpy>=2.4.6
+pandas>=3.0.3
+matplotlib>=3.11.0
+nibabel>=5.4.2
+python-pptx>=1.0.2
+Pillow>=12.2.0
+
+# Not on PyPI -- install/configure separately, required by the scripts noted:
+#   - Connectome Workbench `wb_command` on PATH
+#       (run_fc_pipeline_v1.py, cross_sectional_analysis_v1.py/_v2.py/_batch_v2.py,
+#        combined_analysis_v2.py)
+#   - FSL `applywarp` on PATH
+#       (cross_sectional_analysis_v2.py/_batch_v2.py, combined_analysis_v2.py)
+#   - FreeSurfer, for FreeSurferColorLUT.txt ($FREESURFER_HOME or
+#     /Applications/freesurfer/8.1.0/ fallback)
+#       (cross_sectional_analysis_v1.py/_v2.py/_batch_v2.py, combined_analysis_v2.py)
