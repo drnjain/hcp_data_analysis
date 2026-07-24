@@ -27,8 +27,22 @@ scripts that built up `rsfMRI_processing_summary_with_anat_appendix.pptx`
 slide by slide have been removed — their effects are already permanently
 baked into that presentation, so nothing currently visible depends on them
 (see `SESSION_SUMMARY.md` for what each one did). The two *reusable* pptx
-builders (Section 6 below) were kept, since those regenerate their decks
+builders (Section 7 below) were kept, since those regenerate their decks
 from scratch and are meant to be re-run whenever a source script changes.
+
+### Python dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+Installs the six third-party packages every script in this folder needs
+(`numpy`, `pandas`, `matplotlib`, `nibabel`, `python-pptx`, `Pillow`).
+`requirements.txt` also lists — as comments, since they're not on PyPI —
+the external command-line tools some scripts additionally require:
+Connectome Workbench's `wb_command`, FSL's `applywarp`, and FreeSurfer (for
+`FreeSurferColorLUT.txt`). See each script's own **Requires** note below for
+which of those it needs.
 
 ---
 
@@ -44,6 +58,7 @@ from scratch and are meant to be re-run whenever a source script changes.
 | `cross_sectional_analysis_v1.py` | `python3 cross_sectional_analysis_v1.py` | Cortical thickness/myelin (Schaefer-400) + wmparc regional volumes |
 | `cross_sectional_analysis_v2.py` | `python3 cross_sectional_analysis_v2.py` | v1 + VTA/SN/Nucleus Basalis volumes via HCPex (standard + native space) |
 | `cross_sectional_analysis_batch_v2.py` | `python3 cross_sectional_analysis_batch_v2.py /path/to/Raw_Data` | Non-interactive batch driver for `cross_sectional_analysis_v2.py` |
+| `combined_analysis_v2.py` | `python3 combined_analysis_v2.py` | Runs `cross_sectional_analysis_v2.py` + `run_fc_pipeline_v2.py` back to back for one subject/session |
 | `build_scripts_overview_presentation.py` | `python3 build_scripts_overview_presentation.py` | Rebuilds the standalone "Data Analysis Scripts Overview" pptx |
 | `build_combined_presentation.py` | `python3 build_combined_presentation.py` | Merges the rsfMRI summary deck + Scripts Overview deck into one |
 
@@ -563,7 +578,51 @@ removed along with `run_fc_pipeline.py`).
 
 ---
 
-## 6. Presentation builders
+## 6. `combined_analysis_v2.py` — combined anatomical + functional pipeline
+
+Both `cross_sectional_analysis_v2.py` and `run_fc_pipeline_v2.py` prompt for
+the raw data root and a subject/session independently, so running them back
+to back for the same session means picking the subject/session twice and
+validating atlas files twice. This script imports both as modules and reuses
+their extraction/analysis/plotting/logging functions unchanged: one combined
+subject/session tile picker (tile counts sum both scripts' analysis logs),
+one upfront check for the union of both scripts' required files, then both
+analyses run in sequence into their normal output locations.
+
+- **Part 1 — cross-sectional anatomical analysis (v2):** cortical thickness +
+  myelin (Schaefer-400), wmparc regional volumes, and VTA/SN/Nucleus Basalis
+  volumes via HCPex (standard + native space). Identical to
+  `cross_sectional_analysis_v2.py` (Section 4).
+- **Part 2 — functional connectivity pipeline (v2, HCPex-only):** all 426
+  HCPex parcels, the same five fixed analyses (standard, graph_vta, graph_sn,
+  triangle_vta, triangle_sn). Identical to `run_fc_pipeline_v2.py` (Section 5).
+
+Each part writes to its own normal output location and records into its own
+normal run-count log (`analysis_log_anat_v2.json` / `analysis_log_v3.json`)
+— deliberately **not** a third combined log — so a session analysed here
+shows up already-analysed if you later open either single-purpose
+interactive script on it.
+
+**Standard command:**
+```bash
+python3 combined_analysis_v2.py
+```
+
+**Output:**
+- `Analysed_data/<subject>/<session>/anat/` — see `cross_sectional_analysis_v2.py` (Section 4)
+- `Analysed_data/<subject>/<session>/func/` — see `run_fc_pipeline_v2.py` (Section 5)
+
+**Requires:** the union of both scripts' requirements —
+`schaefer400_tianS1.dlabel.nii`, `HCPex_2mm.nii`, `HCPex_LookUpTable.txt`
+under `<raw root>/atlases/`, `FreeSurferColorLUT.txt`, and FSL's `applywarp`
+on `PATH`.
+
+**Note:** not documented in either pptx deck (`Data_Analysis_Scripts_Overview.pptx`
+or the combined deck) as of this writing — ask before adding it there if that's wanted.
+
+---
+
+## 7. Presentation builders
 
 Both are **reusable** — meant to be re-run whenever a source script's
 behavior changes, not one-off scripts. Both do a fresh `Presentation()` each
