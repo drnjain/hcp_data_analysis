@@ -1,10 +1,54 @@
 # HCP Aging AABC Release 2 — Data Analysis Scripts
 
-This is the narrative overview: how the data is organized, and how each script
-works. For a one-line-per-script index with exact CLI flags, output paths, and
-requirements, see **`README.txt`** in this same folder — that stays the
-authoritative per-script reference.
+This is the single reference for this folder: how the data is organized, how
+each script works, the exact command to run it, every output path, and every
+requirement.
 
+> **Note (2026-07-24):** README.txt's per-script command/output/requirements
+> index has been fully merged into this file, and README.txt has been
+> retired (its original content is preserved at `README.txt.bak` in this
+> folder in case anything needs cross-checking). This file is now the sole
+> authoritative reference for this folder.
+
+> **Note (2026-07-23 rename):** the original `run_fc_pipeline.py` (CIFTI-cortex,
+> 427-parcel, `.npy` output) and its batch counterpart `run_fc_pipeline_batch.py`
+> have been removed. `run_fc_pipeline_v2.py` was renamed to `run_fc_pipeline_v1.py`,
+> and `run_fc_pipeline_v3.py` was renamed to `run_fc_pipeline_v2.py` — filenames
+> only, no code changes, so each script's internal run-count-log and
+> cached-timeseries filenames still use their pre-rename names (called out where
+> relevant below). `cross_sectional_analysis.py` was likewise renamed to
+> `cross_sectional_analysis_v1.py`. `run_fc_pipeline_batch_v2.py` was rebuilt
+> from scratch as a batch driver for the *current* `run_fc_pipeline_v2.py`
+> (HCPex-only) — it is a different script than the name used to refer to. A new
+> `cross_sectional_analysis_batch_v2.py` was also added.
+
+Also present in this folder but not covered below: the one-off pptx-editing
+scripts that built up `rsfMRI_processing_summary_with_anat_appendix.pptx`
+slide by slide have been removed — their effects are already permanently
+baked into that presentation, so nothing currently visible depends on them
+(see `SESSION_SUMMARY.md` for what each one did). The two *reusable* pptx
+builders (Section 6 below) were kept, since those regenerate their decks
+from scratch and are meant to be re-run whenever a source script changes.
+
+---
+
+## Quick command reference
+
+| Script | Command | Purpose |
+|---|---|---|
+| `organize_hcp_data.py` | `python3 organize_hcp_data.py --input DIR --output DIR` | Sort raw HCP zip downloads into `sub-*/ses-*/{anat,func,concat}/` |
+| `plot_roi_amplitudes.py` | `python3 plot_roi_amplitudes.py --group CSV --data CSV` | Interactive box plots of ROI BOLD amplitudes by visit |
+| `run_fc_pipeline_v1.py` | `python3 run_fc_pipeline_v1.py` | Interactive FC pipeline, 427 parcels (Schaefer + Tian-S1 + CIT168 + HCPex) |
+| `run_fc_pipeline_v2.py` | `python3 run_fc_pipeline_v2.py` | Interactive FC pipeline, HCPex-only, 426 parcels |
+| `run_fc_pipeline_batch_v2.py` | `python3 run_fc_pipeline_batch_v2.py /path/to/Raw_Data` | Non-interactive batch driver for `run_fc_pipeline_v2.py` (73 sessions currently) |
+| `cross_sectional_analysis_v1.py` | `python3 cross_sectional_analysis_v1.py` | Cortical thickness/myelin (Schaefer-400) + wmparc regional volumes |
+| `cross_sectional_analysis_v2.py` | `python3 cross_sectional_analysis_v2.py` | v1 + VTA/SN/Nucleus Basalis volumes via HCPex (standard + native space) |
+| `cross_sectional_analysis_batch_v2.py` | `python3 cross_sectional_analysis_batch_v2.py /path/to/Raw_Data` | Non-interactive batch driver for `cross_sectional_analysis_v2.py` |
+| `build_scripts_overview_presentation.py` | `python3 build_scripts_overview_presentation.py` | Rebuilds the standalone "Data Analysis Scripts Overview" pptx |
+| `build_combined_presentation.py` | `python3 build_combined_presentation.py` | Merges the rsfMRI summary deck + Scripts Overview deck into one |
+
+Full detail — including every flag, output file, and requirement — is in the
+matching section below.
 
 ---
 
@@ -116,16 +160,53 @@ organize-or-skip → archive → report.
 **Standard command:**
 ```bash
 python3 organize_hcp_data.py --input /path/to/zip_folder --output /path/to/organized_root
+```
+
+**Useful flags:**
+```bash
 python3 organize_hcp_data.py --input /path/to/zip_folder --output /path/to/organized_root --dry-run
 python3 organize_hcp_data.py --input /path/to/zip_folder --output /path/to/organized_root --subject HCA6072156
 ```
+- `--dry-run` — report what would happen, without extracting/moving anything
+- `--subject HCA6072156` — only process zips for one subject ID
+
+**Output:**
+- `output_root/sub-<subject>/ses-<visit>/{anat,func,concat}/` — the sorted hierarchy
+- `output_root/manifest.csv` — append-only audit log of every zip processed
+- `output_root/archive/` — processed zips (and `.md5` sidecars) moved here after merging
+- `output_root/conflicts.log` — same-name/different-size collisions that were left unresolved
 
 ---
 
-## 3. Cross-sectional anatomical analysis
+## 3. `plot_roi_amplitudes.py` — ROI amplitude box plots
+
+Stands apart from the raw-data/`Analysed_data` pipeline chain above: it
+doesn't read from `Raw_Data/` or write to `Analysed_data/` — its two inputs
+are a group-membership CSV and a pre-computed amplitudes CSV.
+
+**What it does:** draws interactive box plots of ROI BOLD amplitudes by
+visit (V1–V4), for the subject/visit subset listed in a group CSV file.
+Prompts you to pick which ROIs to plot after showing the list found in the
+data file. Saves each figure as both `.svg` and `.png`.
+
+**Standard command:**
+```bash
+python3 plot_roi_amplitudes.py --group /path/to/group5_age_gt50_at_v1_and_moca_gt21_persession.csv \
+                                --data /path/to/rfMRI_REST_FullAmplitudes.csv
+```
+
+**Useful flags:**
+- `-o` / `--output DIR` — directory to save figures into (default: current directory)
+- `-h` / `--help` — full usage, including CSV format requirements
+
+**Output:** one `.svg` and one `.png` per ROI plotted, saved to the output directory.
+
+---
+
+## 4. Cross-sectional anatomical analysis
 
 Two script versions, both interactive (subject/session tile picker, same UI
-as the FC pipeline scripts — see Section 4), both writing to
+as the FC pipeline scripts — see Section 5), both writing to
 `Analysed_data/<subject>/<session>/anat/`. Plus one batch driver.
 
 ### v1 — `cross_sectional_analysis_v1.py`
@@ -148,8 +229,28 @@ comparison:
   needed no atlas at all, since `wmparc`/`aparc+aseg` are already
   FreeSurfer's own atlas-labeled segmentation output).
 
-Labels come from `FreeSurferColorLUT.txt` ($FREESURFER_HOME, or
+Labels come from `FreeSurferColorLUT.txt` (`$FREESURFER_HOME`, or
 `/Applications/freesurfer/8.1.0/` as fallback).
+
+**Standard command:**
+```bash
+python3 cross_sectional_analysis_v1.py
+```
+
+**Output** — `Analysed_data/<subject>/<session>/anat/`:
+- `cortical_thickness_schaefer400.csv`, `myelin_schaefer400.csv`
+- `subcortical_volumes_wmparc.csv`
+- `subcortical_volumes_key_structures.png`, `cortical_thickness_myelin_summary.png`
+- `manifest.txt` — source files + atlas/LUT used, for provenance
+- Own run-count log: `Analysed_data/analysis_log_anat.json`
+
+**Requires:** `schaefer400_tianS1.dlabel.nii` under `<raw root>/atlases/`
+(already present from `run_fc_pipeline_v1.py`); `FreeSurferColorLUT.txt` via
+`$FREESURFER_HOME` or `/Applications/freesurfer/8.1.0/`.
+
+**Note:** no `aseg.stats` (or equivalent eTIV source) was found anywhere in
+this dataset's structural output — `subcortical_volumes_wmparc.csv` reports
+raw mm³, not head-size-normalized.
 
 ### v2 — `cross_sectional_analysis_v2.py`
 
@@ -175,6 +276,25 @@ side by side in `midbrain_basalforebrain_volumes_hcpex.csv`:
   size. This is the value that actually varies by subject — the correct one
   for cross-sectional comparison.
 
+**Standard command:**
+```bash
+python3 cross_sectional_analysis_v2.py
+```
+
+**Output** — `Analysed_data/<subject>/<session>/anat/`:
+- Everything v1 outputs, plus:
+- `midbrain_basalforebrain_volumes_hcpex.csv` — columns: `region, label_id,
+  standard_voxel_count, standard_volume_mm3, native_voxel_count,
+  native_volume_mm3`
+- `midbrain_basalforebrain_volumes_hcpex.png`
+- Own run-count log: `Analysed_data/analysis_log_anat_v2.json` (separate from v1's)
+
+**Requires:** everything v1 requires, plus `HCPex_2mm.nii` +
+`HCPex_LookUpTable.txt` under `<raw root>/atlases/` (already present from
+`run_fc_pipeline_v2.py`), and FSL's `applywarp` on `PATH`.
+
+**Note:** same eTIV caveat as v1 — all volumes reported are raw mm³.
+
 ### Batch variant — `cross_sectional_analysis_batch_v2.py`
 
 (New 2026-07-23.) Non-interactive driver for `cross_sectional_analysis_v2.py`:
@@ -187,10 +307,30 @@ once up front instead of per session. Sessions that already have
 `anat/manifest.txt` are skipped unless `--force`; each session runs in its
 own `try`/`except` so one failure doesn't abort the batch.
 
+**Standard command:**
 ```bash
 python3 cross_sectional_analysis_batch_v2.py /path/to/Raw_Data
+```
+
+**Useful flags:**
+```bash
 python3 cross_sectional_analysis_batch_v2.py /path/to/Raw_Data --force --subjects sub-HCA6002236,sub-HCA6072156
 ```
+- (raw_data_root omitted) — falls back to the same interactive tab-completing
+  path prompt as `cross_sectional_analysis_v2.py`
+- `--force` — re-run sessions that already have `anat/manifest.txt`
+- `--subjects sub-A,sub-B` — restrict to specific subject folder names
+
+**Output** (per session, same as `cross_sectional_analysis_v2.py`) —
+`Analysed_data/<subject>/<session>/anat/`:
+`cortical_thickness_schaefer400.csv`, `myelin_schaefer400.csv`,
+`subcortical_volumes_wmparc.csv`, `midbrain_basalforebrain_volumes_hcpex.csv`,
+`subcortical_volumes_key_structures.png`,
+`midbrain_basalforebrain_volumes_hcpex.png`,
+`cortical_thickness_myelin_summary.png`, `manifest.txt`. Shares
+`analysis_log_anat_v2.json` with `cross_sectional_analysis_v2.py`.
+
+**Requires:** same atlas files + FSL `applywarp` as `cross_sectional_analysis_v2.py`.
 
 ### Flowchart
 
@@ -216,7 +356,7 @@ head-size-normalized.
 
 ---
 
-## 4. Functional connectivity pipeline
+## 5. Functional connectivity pipeline
 
 Two script versions covering the **atlas architecture** axis (v1 → v2), plus
 one batch driver covering the **interactive vs. batch** axis.
@@ -257,10 +397,35 @@ five analyses (four of five have no choice to make anyway):
 5. `triangle_sn` — same idea for SN (SNc+SNr averaged into one "SN" node) →
    plain 3-node triangle (NbM, SN, Hippocampus)
 
-All five save into `Analysed_data/<subject>/<session>/func/` — no
-per-mode subfolder within it — as plain CSV, filenames suffixed
-by which analysis produced them (`fc_matrix_corr_standard.csv`,
-`fc_matrix_corr_graph_vta.csv`, …) so nothing collides.
+`graph_vta`/`graph_sn` render as a node-link graph (region name only, no
+atlas/source text) instead of the square heatmap: each edge shows its
+Pearson r, colored + thickness-scaled on the same red/blue diverging scale as
+the heatmap. `triangle_vta`/`triangle_sn` use the same graph style, just with
+the combined 3-node set.
+
+**Standard command:**
+```bash
+python3 run_fc_pipeline_v1.py
+```
+
+**Output** — `Analysed_data/<subject>/<session>/func/`, for
+`mode in {standard, graph_vta, graph_sn, triangle_vta, triangle_sn}`:
+- `fc_matrix_corr_<mode>.csv`, `fc_matrix_fisherz_<mode>.csv`
+- `region_names_<mode>.txt`
+- `fc_matrix_<mode>.png` / `.svg`
+
+All five save directly into that one `func/` subfolder (no per-mode
+subfolder within it) as plain CSV, filename suffixed by which analysis
+produced it so nothing collides. Full 427-parcel timeseries cached
+per-subject at `Analysed_data/<subject>/timeseries_<session>.csv` (plain
+CSV; delete to force a fresh extraction). Run-count log: `analysis_log_v2.json`.
+
+**Requires:** atlas files under `<raw root>/atlases/` (or the
+`/Volumes/njainmpi/...` fallback): `schaefer400_tianS1.dlabel.nii`,
+`CIT168_prob_func2mm.nii.gz`, `CIT168_labels.txt`, `HCPex_2mm.nii`,
+`HCPex_basal_forebrain_labels.txt`, `Tian_Subcortex_S1_3T.nii`,
+`Tian_Subcortex_S1_labels.txt` (the official volumetric Tian-S1 atlas,
+verified on the same 91x109x91 @ 2mm grid as CIT168/HCPex).
 
 ### v2 — `run_fc_pipeline_v2.py`
 
@@ -273,11 +438,34 @@ included — comes from **one** atlas, HCPex (426 regions: 360 HCP-MMP1.0
 cortex + 66 subcortical/midbrain/basal-forebrain), one file, one volumetric
 mask-mean extraction method. This drops the CIFTI/MSMAll path entirely (the
 tradeoff: losing MSMAll's surface-registration precision for cortex, in
-exchange for one unified pipeline). Every run always computes all five
-analyses for the chosen session (standard, graph_vta, graph_sn,
-triangle_vta, triangle_sn), saved as CSV into their own
-`Analysed_data/<subject>/<session>/func/` subfolder — mirroring the `anat/`
-subfolder `cross_sectional_analysis_v2.py` uses — filenames suffixed `_hcpex`.
+exchange for one unified pipeline). Left/right are kept separate for the
+`graph_*` modes because HCPex lateralizes VTA and SNpc/SNpr (unlike CIT168,
+which v1 used). Every run always computes all five analyses for the chosen
+session (standard, graph_vta, graph_sn, triangle_vta, triangle_sn), saved as
+CSV into their own `Analysed_data/<subject>/<session>/func/` subfolder —
+mirroring the `anat/` subfolder `cross_sectional_analysis_v2.py` uses —
+filenames suffixed `_hcpex`.
+
+**Standard command:**
+```bash
+python3 run_fc_pipeline_v2.py
+```
+
+**Output** — `Analysed_data/<subject>/<session>/func/`, for
+`mode in {standard, graph_vta, graph_sn, triangle_vta, triangle_sn}`:
+- `fc_matrix_corr_<mode>_hcpex.csv`, `fc_matrix_fisherz_<mode>_hcpex.csv`
+- `region_names_<mode>_hcpex.txt`
+- `fc_matrix_<mode>_hcpex.png` / `.svg`
+
+Full 426-parcel timeseries cached per-subject at
+`Analysed_data/<subject>/timeseries_hcpex_<session>.csv` (delete to force a
+fresh extraction, e.g. after updating the atlas file).
+
+**Requires:** atlas files under `<raw root>/atlases/` (or the
+`/Volumes/njainmpi/...` fallback): `HCPex_2mm.nii`, `HCPex_LookUpTable.txt`
+(full descriptive parcel names — not the short-code
+`HCPex_basal_forebrain_labels.txt` that `run_fc_pipeline_v1.py`'s Group D
+uses).
 
 ### Batch variant — `run_fc_pipeline_batch_v2.py`
 
@@ -296,13 +484,39 @@ labels/ranges like `'A1, B2, B4'` / `'A1-10'`) and applied identically to
 every session, since HCPex's 426 parcel names/order are fixed by the atlas,
 not subject-specific. Sessions that already have a standard FC matrix are
 skipped unless `--force`; each session runs in its own `try`/`except` so one
-failure doesn't abort the batch. Shares `analysis_log_v3.json` with the
-interactive `run_fc_pipeline_v2.py`.
+failure doesn't abort the batch; a done/skipped/missing/failed summary
+prints at the end. Shares `analysis_log_v3.json` with the interactive
+`run_fc_pipeline_v2.py`, so a session processed here shows up
+already-analysed if you later open the interactive tool on it.
 
+**Standard command:**
 ```bash
 python3 run_fc_pipeline_batch_v2.py /path/to/Raw_Data
+```
+
+**Useful flags:**
+```bash
 python3 run_fc_pipeline_batch_v2.py /path/to/Raw_Data --force --parcels all --subjects sub-HCA6002236
 ```
+- (raw_data_root omitted) — falls back to the same interactive
+  tab-completing path prompt as `run_fc_pipeline_v2.py`
+- `--force` — re-run sessions that already have `fc_matrix_corr_standard_hcpex.csv`
+- `--subjects sub-A,sub-B` — restrict to specific subject folder names
+- `--parcels all` — parcel selection for the "standard" matrix (default
+  `all`; same syntax as the interactive card picker)
+
+**Output** (per session, see `run_fc_pipeline_v2.py`) —
+`Analysed_data/<subject>/<session>/func/`: `fc_matrix_corr_<mode>_hcpex.csv`,
+`fc_matrix_fisherz_<mode>_hcpex.csv`, `region_names_<mode>_hcpex.txt`,
+`fc_matrix_<mode>_hcpex.png` / `.svg` for
+`mode in {standard, graph_vta, graph_sn, triangle_vta, triangle_sn}`.
+
+**Requires:** same atlas files as `run_fc_pipeline_v2.py`.
+
+**Caution:** this dataset currently has 73 sessions. Know the real scope
+before launching a "quick test" — check `find Raw_Data -name "ses-*" | wc -l`
+first, or use `--subjects` to restrict to a couple of subjects, since letting
+it run against every session is very different from a smoke test.
 
 There is no batch driver for `run_fc_pipeline_v1.py` in this folder (the one
 that used to fill that role, batching the old CIT168/Tian-S1 pipeline, was
@@ -317,9 +531,9 @@ removed along with `run_fc_pipeline.py`).
 - `fc_pipeline_v1_flowchart.png` — the two-track (CIFTI cortex+subcortex /
   volumetric midbrain) architecture of the v1 pipeline end to end. No
   editable source; recovered from the existing presentation's embedded
-  media after the standalone file went missing (see note at top of this
-  file). Its title text still reads "Functional Connectivity Pipeline v2"
-  internally, predating the 2026-07-23 rename — it depicts what is now v1.
+  media after the standalone file went missing. Its title text still reads
+  "Functional Connectivity Pipeline v2" internally, predating the
+  2026-07-23 rename — it depicts what is now v1.
 
 ### Version differences — v1 vs v2
 
@@ -349,7 +563,68 @@ removed along with `run_fc_pipeline.py`).
 
 ---
 
-## 5. Full script index
+## 6. Presentation builders
 
-For exact CLI commands, every output file path, and per-script requirements,
-see **`README.txt`** — kept up to date alongside every script in this folder.
+Both are **reusable** — meant to be re-run whenever a source script's
+behavior changes, not one-off scripts. Both do a fresh `Presentation()` each
+run and overwrite their output file in place, so re-running any time is safe.
+
+### `build_scripts_overview_presentation.py`
+
+**What it does:** builds a standalone presentation, "Data Analysis Scripts
+Overview" — companion to this README, independent of
+`rsfMRI_processing_summary*.pptx` (which documents a specific session's
+processing results, not the scripts themselves). Covers: data hierarchy (raw
++ `Analysed_data` + shared atlases), `organize_hcp_data.py` (what/how + its
+flowchart), `cross_sectional_analysis_v1.py`/`_v2.py` (+ flowchart + a
+v1-vs-v2 differences table + the `cross_sectional_analysis_batch_v2.py`
+batch variant), `run_fc_pipeline_v1.py`/`_v2.py` + the
+`run_fc_pipeline_batch_v2.py` batch variant (+ both FC flowcharts + a
+v1-vs-v2 differences table), a "System Prerequisites" slide, and a "Correct
+Sequence — Running the Scripts" slide.
+
+**Standard command:**
+```bash
+python3 build_scripts_overview_presentation.py
+```
+
+**Output:** `presentations/Data_Analysis_Scripts_Overview.pptx` (in the
+`presentations/` folder, one directory up from this scripts folder).
+
+### `build_combined_presentation.py`
+
+**What it does:** merges `rsfMRI_processing_summary_with_anat_appendix.pptx`
+(39 slides) and `Data_Analysis_Scripts_Overview.pptx` into one sequential
+deck: a new title + master contents, then each source deck's own content
+(minus its own title/contents slides) under a "PART I" / "PART II" divider,
+plus a "PART III · Data Statistics" section appended at the very end (4
+pre-made figures from `results/`: `scan_sessions_5groups.png`,
+`age_range_boxplot_5groups.png`, `interval_summary_table.png`,
+`interval_summary_rangeplot.png`, covering the broader HCP-Aging AABC
+cohort's scan-session counts, age distributions, and inter-visit intervals
+across 5 demographic/cognitive filter groups).
+
+`python-pptx` has no cross-presentation "copy slide" API, so `copy_slide()`
+deep-copies each source slide's background + shape XML into a freshly-added
+blank slide, re-relating any embedded images (rewriting each `<a:blip>`
+`r:embed` rId to point at a newly-added image part in the destination
+package — otherwise copied picture references would be broken links).
+
+Ends with a full consistency pass so the result reads as one deck, not two
+stitched together: every page-number badge across every slide is renumbered
+to its true combined-deck position (single lookup per slide, not sequential
+text replacement, which would cascade); the appendix-overview and
+appendix-subsection index slides (which name slide numbers in their own body
+text) are remapped via a single-pass regex substitution for the same reason;
+and the Scripts-deck-style divider page badge (bottom-left) is repositioned
+to match every other slide's bottom-right convention.
+
+**Standard command:**
+```bash
+python3 build_combined_presentation.py
+```
+
+**Output:** `presentations/Combined_rsfMRI_and_Scripts_Overview.pptx` (in
+the `presentations/` folder, one directory up from this scripts folder).
+Reads its 4 Data Statistics PNGs from `results/`, and its two source decks
+from `presentations/` (both one directory up from this scripts folder).
