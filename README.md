@@ -4,15 +4,16 @@ This is the single reference for this folder: how the data is organized, how
 each script works, the exact command to run it, every output path, and every
 requirement.
 
-
 ### Python dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Installs the six third-party packages every script in this folder needs
-(`numpy`, `pandas`, `matplotlib`, `nibabel`, `python-pptx`, `Pillow`).
+Installs the third-party packages this folder's scripts need: `numpy`,
+`pandas`, `matplotlib`, `nibabel`, `python-pptx`, `Pillow` (used across most
+scripts), plus `scipy` (used only by `group_analysis_cross_sectional.py`, for
+t/F-distribution p-values).
 `requirements.txt` also lists — as comments, since they're not on PyPI —
 the external command-line tools some scripts additionally require:
 Connectome Workbench's `wb_command`, FSL's `applywarp`, and FreeSurfer (for
@@ -33,7 +34,9 @@ which of those it needs.
 | `cross_sectional_analysis_v1.py` | `python3 cross_sectional_analysis_v1.py` | Cortical thickness/myelin (Schaefer-400) + wmparc regional volumes |
 | `cross_sectional_analysis_v2.py` | `python3 cross_sectional_analysis_v2.py` | v1 + VTA/SN/Nucleus Basalis volumes via HCPex (standard + native space) |
 | `cross_sectional_analysis_batch_v2.py` | `python3 cross_sectional_analysis_batch_v2.py /path/to/Raw_Data` | Non-interactive batch driver for `cross_sectional_analysis_v2.py` |
-| `combined_analysis_v2.py` | `python3 combined_analysis_v2.py` | Runs `cross_sectional_analysis_v2.py` + `run_fc_pipeline_v2.py` back to back for one subject/session |
+| `combined_analysis_v2.py` | `python3 combined_analysis_v2.py` | Organizes new zip data, then runs `cross_sectional_analysis_v2.py` + `run_fc_pipeline_v2.py` back to back for one subject/session |
+| `combined_analysis_batch_v2.py` | `python3 combined_analysis_batch_v2.py /path/to/Raw_Data` | Non-interactive batch driver for both analysis parts of `combined_analysis_v2.py` (organize step excluded) |
+| `group_analysis_cross_sectional.py` | `python3 group_analysis_cross_sectional.py /path/to/Raw_Data` | Group-level stats (age/sex/custom, FDR-corrected) on the extracted anatomical measures, one session per subject |
 | `build_scripts_overview_presentation.py` | `python3 build_scripts_overview_presentation.py` | Rebuilds the standalone "Data Analysis Scripts Overview" pptx |
 | `build_combined_presentation.py` | `python3 build_combined_presentation.py` | Merges the rsfMRI summary deck + Scripts Overview deck into one |
 
@@ -468,11 +471,13 @@ Non-interactive driver: imports `run_fc_pipeline_v2.py` as a module and
 reuses its extraction/analysis/plotting/logging functions unchanged,
 replacing only the interactive subject/session/parcel pickers with a loop
 over every `sub-*/ses-*` session found under a raw data root. The
-"standard" matrix's parcel selection is made **once** up front (same syntax
-as the interactive card picker — `all`, a bare group letter, or
-labels/ranges like `'A1, B2, B4'` / `'A1-10'`) and applied identically to
-every session, since HCPex's 426 parcel names/order are fixed by the atlas,
-not subject-specific. Sessions that already have a standard FC matrix are
+"standard" matrix's parcel selection is made **once** up front and applied
+identically to every session, since HCPex's 426 parcel names/order are fixed
+by the atlas, not subject-specific. If `--parcels` is omitted, this prompts
+interactively **once** using the same atlas-group card picker as the
+single-session script (before the batch starts, not per session) — pass a
+value (`all`, a bare group letter, or labels/ranges like `'A1, B2, B4'` /
+`'A1-10'`) to skip the prompt and run fully non-interactively. Sessions that already have a standard FC matrix are
 skipped unless `--force`; each session runs in its own `try`/`except` so one
 failure doesn't abort the batch; a done/skipped/missing/failed summary
 prints at the end. Shares `analysis_log_v3.json` with the interactive
@@ -492,8 +497,9 @@ python3 run_fc_pipeline_batch_v2.py /path/to/Raw_Data --force --parcels all --su
   tab-completing path prompt as `run_fc_pipeline_v2.py`
 - `--force` — re-run sessions that already have `fc_matrix_corr_standard_hcpex.csv`
 - `--subjects sub-A,sub-B` — restrict to specific subject folder names
-- `--parcels all` — parcel selection for the "standard" matrix (default
-  `all`; same syntax as the interactive card picker)
+- `--parcels all` — parcel selection for the "standard" matrix; if omitted,
+  prompts interactively once (same atlas-group card picker as the
+  single-session script) instead of defaulting silently to `all`
 
 **Output** (per session, see `run_fc_pipeline_v2.py`) —
 `Analysed_data/<subject>/<session>/func/`: `fc_matrix_corr_<mode>_hcpex.csv`,
@@ -553,17 +559,30 @@ removed along with `run_fc_pipeline.py`).
 
 ---
 
-## 6. `combined_analysis_v2.py` — combined anatomical + functional pipeline
+## 6. `combined_analysis_v2.py` — combined organize + anatomical + functional pipeline
 
-Both `cross_sectional_analysis_v2.py` and `run_fc_pipeline_v2.py` prompt for
-the raw data root and a subject/session independently, so running them back
-to back for the same session means picking the subject/session twice and
-validating atlas files twice. This script imports both as modules and reuses
-their extraction/analysis/plotting/logging functions unchanged: one combined
-subject/session tile picker (tile counts sum both scripts' analysis logs),
-one upfront check for the union of both scripts' required files, then both
-analyses run in sequence into their normal output locations.
+Runs three things back to back for one subject/session: data organization
+(`organize_hcp_data.py`), cross-sectional anatomical analysis
+(`cross_sectional_analysis_v2.py`), and the FC pipeline (`run_fc_pipeline_v2.py`).
+The two analysis scripts prompt for the raw data root and a subject/session
+independently, so running them back to back for the same session means
+picking the subject/session twice and validating atlas files twice — this
+script imports all three as modules and reuses their
+extraction/analysis/plotting/logging functions unchanged.
 
+- **Part 0 — data organization:** same **Input**/**Output** prompts as
+  `organize_hcp_data.py`'s required `--input`/`--output` flags, asked every
+  run (not skippable) — Input is the folder of new HCP zip packages, Output
+  is the raw data root to organize into. Output does not need to already
+  exist (created via `mkdir` if missing, same as `organize_hcp_data.py`) and
+  becomes the raw data root used by Parts 1–2 below — there's no separate
+  "raw data root" prompt after this. Unlike the standalone script, this step
+  does **not** abort if the input folder currently has zero new zip files —
+  it just notes that and continues into the anatomical/functional analysis,
+  since a routine re-analysis run with no new data to organize shouldn't be
+  blocked. Reuses `organize_hcp_data.py`'s own `process_zip()` /
+  `MANIFEST_FIELDS` unchanged, so extraction/archiving/manifest behavior is
+  otherwise identical to running that script directly (Section 2).
 - **Part 1 — cross-sectional anatomical analysis (v2):** cortical thickness +
   myelin (Schaefer-400), wmparc regional volumes, and VTA/SN/Nucleus Basalis
   volumes via HCPex (standard + native space). Identical to
@@ -572,27 +591,158 @@ analyses run in sequence into their normal output locations.
   HCPex parcels, the same five fixed analyses (standard, graph_vta, graph_sn,
   triangle_vta, triangle_sn). Identical to `run_fc_pipeline_v2.py` (Section 5).
 
-Each part writes to its own normal output location and records into its own
-normal run-count log (`analysis_log_anat_v2.json` / `analysis_log_v3.json`)
-— deliberately **not** a third combined log — so a session analysed here
-shows up already-analysed if you later open either single-purpose
-interactive script on it.
+After Part 0, one combined subject/session tile picker (tile counts sum both
+analysis scripts' logs) and one upfront check for the union of both analysis
+scripts' required files, then Parts 1–2 run in sequence into their normal
+output locations. Each analysis part writes to its own normal output
+location and records into its own normal run-count log
+(`analysis_log_anat_v2.json` / `analysis_log_v3.json`) — deliberately
+**not** a third combined log — so a session analysed here shows up
+already-analysed if you later open either single-purpose interactive script
+on it.
 
 **Standard command:**
 ```bash
 python3 combined_analysis_v2.py
 ```
+Prompts, in order: Input (zip folder) → Output (raw data root) → subject →
+session → "standard" FC parcel selection.
 
 **Output:**
+- `<raw root>/sub-*/ses-*/...`, `<raw root>/archive/`, `<raw root>/manifest.csv` — from the organize step (Part 0)
 - `Analysed_data/<subject>/<session>/anat/` — see `cross_sectional_analysis_v2.py` (Section 4)
 - `Analysed_data/<subject>/<session>/func/` — see `run_fc_pipeline_v2.py` (Section 5)
 
-**Requires:** the union of both scripts' requirements —
+**Requires:** the union of all three scripts' requirements —
 `schaefer400_tianS1.dlabel.nii`, `HCPex_2mm.nii`, `HCPex_LookUpTable.txt`
 under `<raw root>/atlases/`, `FreeSurferColorLUT.txt`, and FSL's `applywarp`
-on `PATH`.
+on `PATH` (`organize_hcp_data.py` itself needs nothing beyond the standard
+library).
 
 **Note:** not documented in either pptx deck (`Data_Analysis_Scripts_Overview.pptx`
 or the combined deck) as of this writing — ask before adding it there if that's wanted.
+
+### Batch variant — `combined_analysis_batch_v2.py`
+
+(New 2026-07-27.) Non-interactive driver for Parts 1–2 of
+`combined_analysis_v2.py` — **not** Part 0; the organize step stays a
+separate manual/interactive step (via `organize_hcp_data.py` directly, or
+`combined_analysis_v2.py`'s Part 0) done before batch-processing a folder of
+already-organized sessions. Imports `cross_sectional_analysis_v2.py` and
+`run_fc_pipeline_v2.py` as modules and reuses their functions unchanged,
+looping over every `sub-*/ses-*` session found under a raw data root.
+
+Skip-if-already-done is tracked **per part, independently** — a session
+where only one part has already been run (e.g. via the standalone batch
+drivers) gets just the missing part filled in, not both redone; `--force`
+reruns both. The required-files check is all-or-nothing for whichever
+part(s) still need to run on a given session (same upfront-validation
+philosophy as `combined_analysis_v2.py` itself). Subject-invariant work
+(FreeSurfer/HCPex LUTs, the cortex vertex LUT, HCPex standard-space volumes,
+the "standard" FC parcel selection) is computed once up front, same as both
+standalone batch drivers. Writes to each part's own normal output location
+and run-count log (`analysis_log_anat_v2.json` / `analysis_log_v3.json`) —
+same as `combined_analysis_v2.py`, not a third combined log.
+
+**Standard command:**
+```bash
+python3 combined_analysis_batch_v2.py /path/to/Raw_Data
+```
+
+**Useful flags:**
+```bash
+python3 combined_analysis_batch_v2.py /path/to/Raw_Data --force --parcels all --subjects sub-HCA6002236
+```
+- (raw_data_root omitted) — falls back to the same interactive
+  tab-completing path prompt as `cross_sectional_analysis_v2.py`
+- `--force` — re-run **both** parts for sessions that already have them
+- `--subjects sub-A,sub-B` — restrict to specific subject folder names
+- `--parcels` — parcel selection for the "standard" FC matrix; if omitted,
+  prompts interactively once (same atlas-group card picker as the
+  single-session script)
+
+**Output** (per session, union of both parts) —
+`Analysed_data/<subject>/<session>/anat/` (see `cross_sectional_analysis_v2.py`)
+and `Analysed_data/<subject>/<session>/func/` (see `run_fc_pipeline_v2.py`).
+Per-session status line reports which part(s) actually ran, e.g.
+`[done] sub-X/ses-Y (anat: done, func: skipped)`.
+
+**Requires:** same as `combined_analysis_v2.py`'s Parts 1–2 (the organize
+step's requirements don't apply here, since this batch driver doesn't run
+it).
+
+**Note:** not yet run against real `Analysed_data` (only compile/import/
+signature-verified) — like `combined_analysis_v2.py`, not documented in
+either pptx deck as of this writing.
+
+---
+
+## 7. `group_analysis_cross_sectional.py` — group-level cross-sectional statistics
+
+**What it does:** the missing statistics step after `cross_sectional_analysis_v2.py`
+/ `_batch_v2.py` — those only extract per-session values into
+`Analysed_data/<subject>/<session>/anat/*.csv`, with no group comparison at
+all. This script reads those CSVs plus the demographics CSV (`AABC2_subjects_*.csv`,
+matched by `id_event = "<subject>_<visit>"`, e.g. `HCA6002236_V1`), and runs a
+per-region linear model with FDR correction.
+
+**Cross-sectional design note:** every subject here has multiple sessions
+(V1/V2/V3...). Pooling every session as an independent row would violate the
+independence assumption a cross-sectional test needs (repeated sessions from
+one subject are correlated). So this script always picks exactly **one**
+session per subject first (`--session`, default `earliest`) — N = subjects,
+not N = sessions. Using every session instead would be a longitudinal/mixed-
+effects design, which this script deliberately does not do.
+
+**Modes** (which variable is tested, and what it's adjusted for) — default is
+all four built-ins, restrict with `--modes`:
+
+| Mode | Tests | Adjusts for |
+|---|---|---|
+| `age_median` | 2-group split on `age_open` (median) | sex, site |
+| `age_tertile` | 3-group split on `age_open` (tertiles) | sex, site |
+| `age_continuous` | `age_open` linearly | sex, site |
+| `sex` | sex (M/F) | age_open, site |
+| `custom` (`--group-col COLUMN`) | any other demographics column | the other two of age/sex/site |
+
+Per region: `value ~ group + covariates` (OLS; all regions of a measure
+solved in one `lstsq` call). A 2-level (or continuous) group gives one
+coefficient → two-sided t-test. A >2-level group (`age_tertile`, or a custom
+column with >2 categories) gives multiple dummy columns → F-test vs. the
+model with those columns dropped. P-values are FDR-corrected
+(Benjamini-Hochberg) **within each (mode, measure) pair separately** — 400
+cortical regions and ~6 midbrain/basal-forebrain regions are different
+testing families and shouldn't share one correction. A region is dropped
+from a measure if present for <90% of that mode's subjects.
+
+**Standard commands:**
+```bash
+python3 group_analysis_cross_sectional.py /path/to/Raw_Data
+python3 group_analysis_cross_sectional.py /path/to/Raw_Data --modes sex
+python3 group_analysis_cross_sectional.py /path/to/Raw_Data --modes custom --group-col race
+python3 group_analysis_cross_sectional.py /path/to/Raw_Data --session ses-V1
+```
+- `raw_root` — same raw-data root every other script uses; also where
+  `AABC2_subjects_*.csv` is auto-discovered (newest match), or pass one
+  explicitly with `--demographics`.
+- `--modes` — comma-separated subset of `age_median,age_tertile,age_continuous,sex,custom`.
+- `--session` — `earliest` (default), `latest`, or a literal session name (e.g. `ses-V1`).
+- `--measures` — `all` (default), `cortical` (thickness+myelin), or `subcortical` (wmparc+midbrain/BF).
+- `--alpha` — FDR q-value threshold (default 0.05).
+- `--subjects` — comma-separated subject folder names to restrict to.
+
+**Output** — `Analysed_data/group_analysis/<mode>/`:
+- `<measure>_results.csv` — `region, n, df, stat_type, stat, beta, p, p_fdr, significant`
+- `<measure>_manhattan.png` — `-log10(FDR p)` per region, dashed line at alpha
+- `manifest.txt` — demographics file used, subjects included/excluded and why, covariates, per-measure region/significant counts
+
+**Requires:** `scipy` (t/F-distribution p-values) — the one dependency this
+script needs beyond the rest of the folder; see `requirements.txt`.
+
+**Note on eTIV / head-size normalization:** same caveat as
+`cross_sectional_analysis_v2.py` — no `aseg.stats` exists anywhere in this
+dataset, so subcortical/midbrain volumes here are raw mm³. Age/sex group
+differences in raw volume can be confounded by head size, and there's no
+eTIV available in this dataset to correct for it.
 
 ---
