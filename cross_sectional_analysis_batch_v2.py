@@ -42,6 +42,7 @@ import traceback
 from pathlib import Path
 
 import cross_sectional_analysis_v2 as csa
+import region_grouping
 
 
 def find_sessions(raw_root, subject_filter):
@@ -89,7 +90,7 @@ def required_files(session):
     }, []
 
 
-def process_session(subject, session, analysed_root, shared, force):
+def process_session(subject, session, analysed_root, shared, force, grouping_spec=None):
     out_dir = analysed_root / subject.name / session.name / "anat"
     if (out_dir / "manifest.txt").exists() and not force:
         return "skipped", None
@@ -100,13 +101,13 @@ def process_session(subject, session, analysed_root, shared, force):
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    thickness_rows = csa.parcellate_cortical_dscalar(
-        paths["thickness_path"], shared["vertex_lut"], shared["label_names"])
+    thickness_rows, thickness_counts = csa.parcellate_cortical_dscalar(
+        paths["thickness_path"], shared["vertex_lut"], shared["label_names"], return_counts=True)
     csa.save_named_csv(out_dir / "cortical_thickness_schaefer400.csv",
                         ["region", "thickness_mm"], thickness_rows)
 
-    myelin_rows = csa.parcellate_cortical_dscalar(
-        paths["myelin_path"], shared["vertex_lut"], shared["label_names"])
+    myelin_rows, myelin_counts = csa.parcellate_cortical_dscalar(
+        paths["myelin_path"], shared["vertex_lut"], shared["label_names"], return_counts=True)
     csa.save_named_csv(out_dir / "myelin_schaefer400.csv", ["region", "myelin_ratio"], myelin_rows)
 
     volume_rows, voxel_vol_mm3 = csa.extract_subcortical_volumes(paths["wmparc_path"], shared["fs_lut"])
@@ -130,6 +131,12 @@ def process_session(subject, session, analysed_root, shared, force):
                         shared["hcpex_path"], paths["warp_field_path"], paths["ref_native_path"],
                         native_voxel_vol)
 
+    if grouping_spec:
+        csa.save_combined_measures(
+            out_dir, grouping_spec, subject.name, session.name,
+            thickness_rows, thickness_counts, myelin_rows, myelin_counts,
+            volume_rows, shared["name_to_id"], shared["standard_rows"], native_rows)
+
     csa.record_analysis(analysed_root, subject.name, session.name)
     return "done", None
 
@@ -139,12 +146,23 @@ def main():
     ap.add_argument("raw_root", nargs="?", help="path to raw data root (contains sub-*/ses-*/...)")
     ap.add_argument("--force", action="store_true", help="re-run sessions that already have anat/manifest.txt")
     ap.add_argument("--subjects", help="comma-separated subject folder names to restrict to")
+    ap.add_argument("--groups", default=region_grouping.DEFAULT_SPEC,
+                     help="ALSO write composite-region copies of every measure beside the per-parcel output (*_combined.csv, default: lr; 'none' to skip): "
+                          + region_grouping.BUILTIN_HELP)
     args = ap.parse_args()
+
+    # Validate --groups before ANY work: a typo should cost a second, not a
+    # session's extraction (or a whole batch's).
+    try:
+        groups_desc = region_grouping.validate_spec(args.groups)
+    except ValueError as exc:
+        sys.exit(f"--groups: {exc}")
 
     raw_root = Path(args.raw_root).expanduser() if args.raw_root else csa.find_data_root()
     if not raw_root.is_dir():
         sys.exit(f"'{raw_root}' is not a directory")
     subject_filter = set(s.strip() for s in args.subjects.split(",")) if args.subjects else None
+
 
     analysed_root = raw_root.parent / "Analysed_data"
     pairs = find_sessions(raw_root, subject_filter)
@@ -177,7 +195,8 @@ def main():
     for subject, session in pairs:
         label = f"{subject.name}/{session.name}"
         try:
-            status, detail = process_session(subject, session, analysed_root, shared, args.force)
+            status, detail = process_session(subject, session, analysed_root, shared, args.force,
+                                              args.groups)
         except Exception as exc:
             print(f"[FAILED]  {label} -- {exc}")
             traceback.print_exc()

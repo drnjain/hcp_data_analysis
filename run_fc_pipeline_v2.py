@@ -66,6 +66,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import nibabel as nib
+
+import region_grouping
 import readline
 
 # The 66 base names (33/hemisphere, hemisphere suffix _L/_R stripped) HCPex
@@ -133,6 +135,10 @@ TRIANGLE_COMBINE_MAP = {
 }
 TRIANGLE_VTA = ["NbM", "VTA", "Hippocampus"]
 TRIANGLE_SN = ["NbM", "SN", "Hippocampus"]
+
+# Above this many nodes the circular graph becomes an unreadable hairball, so the
+# extra graph view of a combined analysis is only drawn for small region sets.
+MAX_GRAPH_NODES = 12
 
 
 def classify(name):
@@ -628,6 +634,63 @@ def build_triangle_ts(all_ts, all_names):
     return np.stack(columns, axis=1), names
 
 
+def run_grouped_analysis(all_ts, all_names, selected_names, grouping, out_dir, suffix,
+                          subject_name, session_name):
+    """Same analysis as run_and_save_analysis, on composite regions.
+
+    The parcels are combined FIRST (their timeseries averaged sample by sample)
+    and the correlation computed on the composites -- treating a pair as one
+    region. That is not the same as averaging the two parcels' correlations
+    afterwards, which would average two measurements of different regions.
+
+    Output goes to <suffix>_combined so it never overwrites the per-parcel run,
+    and the grouping itself is written beside it for provenance.
+    """
+    # `grouping` may be a Grouping or the spec that produced it ('lr', a file
+    # path): callers differ, and a built-in spec has to be resolved against THIS
+    # parcel list anyway, so resolve it here rather than trusting every caller
+    # to have done it. (cross_sectional_analysis_v2.save_combined_measures does
+    # the same, which is why the anatomical half kept working when a batch
+    # driver passed the raw string.)
+    grouping = region_grouping.for_names(grouping, selected_names)
+    if not grouping:
+        print(f"  [{suffix}_combined] grouping merges nothing in this parcel set -- skipped")
+        return None
+
+    index = {n: i for i, n in enumerate(all_names)}
+    sel_ts = all_ts[:, [index[n] for n in selected_names]]
+    ts, names = region_grouping.combine_timeseries(sel_ts, selected_names, grouping)
+    if len(names) < 2:
+        print(f"  [{suffix}_combined] grouping leaves {len(names)} region(s) -- need 2, skipped")
+        return None
+
+    combined_suffix = f"{suffix}_combined"
+    # The combined figure mirrors the analysis it came from: the standard matrix
+    # is a heatmap, so its combined counterpart is a heatmap too, and the two can
+    # be read side by side. (Choosing by node count instead made a 5-region
+    # combination silently come out as a graph, with no heatmap to compare.)
+    run_and_save_analysis(ts, names, names, out_dir, combined_suffix,
+                          subject_name, session_name, use_graph_plot=False)
+
+    # For a handful of regions the circular graph is genuinely easier to read
+    # than a 5x5 heatmap, so write it as well rather than instead.
+    if len(names) <= MAX_GRAPH_NODES:
+        corr = np.corrcoef(ts, rowvar=False)
+        np.fill_diagonal(corr, 1.0)
+        plot_graph(corr, names, out_dir,
+                   title=f"{subject_name} / {session_name} — Functional Connectivity, "
+                         f"{combined_suffix} ({len(names)} regions)",
+                   suffix=f"{combined_suffix}_graph")
+        print(f"  [{combined_suffix}] also wrote fc_matrix_{combined_suffix}_graph.png/.svg")
+    (out_dir / f"region_groups_{combined_suffix}.json").write_text(
+        json.dumps(grouping.to_dict(), indent=2) + "\n")
+    print(f"  [{combined_suffix}] {len(selected_names)} parcels -> {len(names)} composite region(s)"
+          f" ({grouping.source})")
+    for note in grouping.notes:
+        print(f"    NOTE: {note}")
+    return names
+
+
 def run_and_save_analysis(all_ts, all_names, selected_names, out_dir, suffix,
                            subject_name, session_name, use_graph_plot):
     """Compute the FC matrix for selected_names and save every output into
@@ -700,6 +763,11 @@ def main():
     print("\n== Standard FC matrix -- pick parcels ==")
     standard_selection = choose_parcels(all_names)
 
+    # Optional: treat groups of the selected parcels as single regions. The four
+    # fixed graph/triangle analyses keep their own node sets -- the triangle
+    # ones already combine L/R by construction.
+    grouping = region_grouping.prompt_grouping(standard_selection)
+
     triangle_ts, triangle_names = build_triangle_ts(all_ts, all_names)
 
     print(f"\n== Computing all five analyses for {subject.name}/{session.name} ==")
@@ -713,6 +781,10 @@ def main():
                            subject.name, session.name, use_graph_plot=True)
     run_and_save_analysis(triangle_ts, triangle_names, TRIANGLE_SN, out_dir, "triangle_sn_hcpex",
                            subject.name, session.name, use_graph_plot=True)
+
+    if grouping:
+        run_grouped_analysis(all_ts, all_names, standard_selection, grouping, out_dir,
+                             "standard_hcpex", subject.name, session.name)
 
     record_analysis(analysed_root, subject.name, session.name)
 

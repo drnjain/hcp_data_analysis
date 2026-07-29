@@ -3,12 +3,12 @@
 Interactive cross-sectional anatomical analysis pipeline (v2 -- adds
 midbrain / basal-forebrain volumes).
 
-Same as cross_sectional_analysis.py (cortical thickness + myelin,
+Same as cross_sectional_analysis_v1.py (cortical thickness + myelin,
 Schaefer-400 parcellated; wmparc-based regional volumes for every
 FreeSurfer-segmented structure), PLUS volumes for three structures FreeSurfer
 does NOT segment -- Ventral Tegmental Area (VTA), Substantia Nigra (SNc/SNr),
 and Nucleus Basalis (NbM) -- pulled from the HCPex atlas instead, the same
-one run_fc_pipeline_v3.py uses for these regions in the FC pipeline.
+one run_fc_pipeline_v2.py uses for these regions in the FC pipeline.
 
 Why this needs its own step (and its own version number): HCPex is a
 template atlas defined in standard MNI152 space -- the same space every
@@ -53,17 +53,35 @@ Output:
     midbrain_basalforebrain_volumes_hcpex.csv
       (region, label_id, standard_voxel_count, standard_volume_mm3,
        native_voxel_count, native_volume_mm3)
+    selected_regions_volumes.csv           (region, source, group, volume_mm3)
     subcortical_volumes_key_structures.png
     midbrain_basalforebrain_volumes_hcpex.png
     cortical_thickness_myelin_summary.png
+    selected_regions_volumes_log.png
+    selected_regions_volumes_linear.png
     manifest.txt
+
+After the three standard figures are written, the script prompts for a set of
+regions -- any mix of wmparc labels (key subcortical, other non-cortical,
+ctx-*, wm-*) and the HCPex midbrain/basal-forebrain parcels -- and plots them
+all together on one axis, as horizontal bars sorted largest-first. Selection
+accepts numbers (1,5), ranges (10-14), group names, or 'all'; pressing Enter
+takes the default (key subcortical + midbrain/basal forebrain, i.e. the union
+of the two standard volume figures). The same selection is rendered twice, on
+a log axis and a linear one: log keeps small nuclei like VTA legible next to
+the ~7,000 mm^3 thalamus, linear preserves true proportions. All values on
+this figure are NATIVE-space mm^3 so the two atlas sources are comparable --
+the HCPex numbers used are the warped native ones, never the standard-space
+ones. This step is interactive and lives only in main(), so the batch drivers
+(cross_sectional_analysis_batch_v2.py, combined_analysis_batch_v2.py) are
+unaffected and still write the three standard figures only.
   Own run-count log: Analysed_data/analysis_log_anat_v2.json (separate from
   v1's analysis_log_anat.json and the FC pipeline's logs).
 
 Requires:
-  Everything cross_sectional_analysis.py requires, plus HCPex_2mm.nii +
+  Everything cross_sectional_analysis_v1.py requires, plus HCPex_2mm.nii +
   HCPex_LookUpTable.txt under <raw root>/atlases/ (already present from
-  run_fc_pipeline_v3.py), and FSL's applywarp on PATH (checked via
+  run_fc_pipeline_v2.py), and FSL's applywarp on PATH (checked via
   shutil.which -- confirmed present at /Users/jain/fsl/share/fsl/bin/applywarp
   on this machine).
 
@@ -86,6 +104,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import nibabel as nib
+
+import region_grouping
 import readline
 
 ANALYSIS_LOG_NAME = "analysis_log_anat_v2.json"  # separate from v1's and the FC pipeline's logs
@@ -116,7 +136,8 @@ KEY_SUBCORTICAL_IDS = {
 
 # HCPex base names (hemisphere suffix stripped) for the 3 structures FreeSurfer
 # doesn't segment -- matched against HCPex_LookUpTable.txt names dynamically,
-# not hardcoded IDs, since v3 already established the LUT is the source of truth.
+# not hardcoded IDs, since run_fc_pipeline_v2.py already established the LUT is
+# the source of truth.
 MIDBRAIN_BF_BASENAMES = [
     "Substantia_nigra_pars_compacta",
     "Substantia_nigra_pars_reticulata",
@@ -251,6 +272,122 @@ def choose_tile(items, counts, label, formatter=str):
         print("  Invalid choice, try again.")
 
 
+def build_region_pool(volume_rows, name_to_id, native_rows):
+    """Every region available to plot in the combined figure, as a list of
+    dicts: {name, group, volume_mm3, source}.
+
+    Both sources contribute NATIVE-space mm^3 so the two are directly
+    comparable on one axis -- wmparc is native by construction, and the HCPex
+    numbers used here are the warped native ones, never the standard-space
+    ones (which are identical for every subject; see this file's docstring)."""
+    key_ids = {lid for pair in KEY_SUBCORTICAL_IDS.values() for lid in pair}
+
+    pool = []
+    for lid, name, _cnt, vol in volume_rows:
+        if lid in key_ids:
+            group = "key"
+        elif name.startswith("ctx-"):
+            group = "cortex"
+        elif name.startswith("wm-") or "WhiteMatter" in name:
+            group = "wm"
+        else:
+            group = "other"
+        pool.append({"name": name, "group": group, "volume_mm3": vol, "source": "wmparc"})
+
+    for name in sorted(name_to_id, key=lambda n: name_to_id[n]):
+        pool.append({"name": name, "group": "midbrain", "volume_mm3": native_rows[name][2],
+                      "source": "HCPex (native)"})
+    return pool
+
+
+GROUP_LABELS = [
+    ("key", "Key subcortical (wmparc)"),
+    ("midbrain", "Midbrain / basal forebrain (HCPex, native space)"),
+    ("other", "Other non-cortical (wmparc)"),
+    ("cortex", "Cortical ribbon, ctx-* (wmparc)"),
+    ("wm", "White matter, wm-* (wmparc)"),
+]
+DEFAULT_REGION_GROUPS = ("key", "midbrain")
+
+
+def _print_region_pool(pool):
+    term_width = shutil.get_terminal_size(fallback=(100, 24)).columns
+    name_w = max(len(r["name"]) for r in pool)
+    col_w = 6 + name_w + 12
+    n_cols = max(1, min(3, term_width // (col_w + 2)))
+
+    for group, title in GROUP_LABELS:
+        idxs = [i for i, r in enumerate(pool) if r["group"] == group]
+        if not idxs:
+            continue
+        print(f"\n  [{group}] {title} — {len(idxs)} region(s)")
+        rows = (len(idxs) + n_cols - 1) // n_cols
+        for row in range(rows):
+            cells = []
+            for col in range(n_cols):
+                pos = col * rows + row
+                if pos >= len(idxs):
+                    continue
+                i = idxs[pos]
+                cells.append(f"{i + 1:>4}. {pool[i]['name']:<{name_w}} "
+                              f"{pool[i]['volume_mm3']:>9.0f}")
+            print("    " + "  ".join(cells))
+
+
+def parse_region_selection(text, pool):
+    """'1,5,10-14,midbrain' -> list of pool indices, in pool order, deduped.
+    Returns None (with a message printed) if anything is unparseable."""
+    selected = set()
+    for token in (t.strip() for t in text.split(",")):
+        if not token:
+            continue
+        low = token.lower()
+        if low == "all":
+            selected.update(range(len(pool)))
+        elif low in {g for g, _t in GROUP_LABELS}:
+            selected.update(i for i, r in enumerate(pool) if r["group"] == low)
+        elif "-" in token and all(p.strip().isdigit() for p in token.split("-", 1)):
+            start, end = (int(p) for p in token.split("-", 1))
+            if not (1 <= start <= end <= len(pool)):
+                print(f"  Range '{token}' is out of bounds (1-{len(pool)}).")
+                return None
+            selected.update(range(start - 1, end))
+        elif token.isdigit():
+            num = int(token)
+            if not 1 <= num <= len(pool):
+                print(f"  '{token}' is out of bounds (1-{len(pool)}).")
+                return None
+            selected.add(num - 1)
+        else:
+            print(f"  Could not understand '{token}'.")
+            return None
+    return sorted(selected)
+
+
+def choose_regions(pool):
+    """Interactive multi-select over the region pool. Empty input accepts the
+    default (key subcortical + midbrain/basal forebrain)."""
+    _print_region_pool(pool)
+    group_names = ", ".join(g for g, _t in GROUP_LABELS)
+    print(f"\n  Select regions for the combined figure: numbers (1,5), ranges (10-14),")
+    print(f"  group names ({group_names}), or 'all'. Combine with commas.")
+    print(f"  Press Enter for the default ({' + '.join(DEFAULT_REGION_GROUPS)}).")
+
+    while True:
+        text = input("Regions: ").strip()
+        if not text:
+            chosen = [i for i, r in enumerate(pool) if r["group"] in DEFAULT_REGION_GROUPS]
+        else:
+            chosen = parse_region_selection(text, pool)
+            if chosen is None:
+                continue
+        if not chosen:
+            print("  Nothing selected, try again.")
+            continue
+        print(f"  {len(chosen)} region(s) selected.")
+        return [pool[i] for i in chosen]
+
+
 def find_data_root():
     enable_path_completion()
     try:
@@ -317,7 +454,7 @@ def load_freesurfer_lut(lut_path):
 
 
 def load_hcpex_lut(lut_path):
-    """id -> name, HCPex_LookUpTable.txt format (same as run_fc_pipeline_v3.py's
+    """id -> name, HCPex_LookUpTable.txt format (same as run_fc_pipeline_v2.py's
     load_hcpex_labels): '<idx> <Name> <r> <g> <b> <a>' per line, index 0 skipped."""
     labels = {}
     for line in lut_path.read_text().strip().splitlines():
@@ -347,7 +484,14 @@ def build_cortex_vertex_lut(atlas_path):
     return vertex_lut, label_names
 
 
-def parcellate_cortical_dscalar(dscalar_path, vertex_lut, label_names):
+def parcellate_cortical_dscalar(dscalar_path, vertex_lut, label_names, return_counts=False):
+    """Mean of the dscalar over each cortical parcel.
+
+    With return_counts=True also returns {region: vertex_count}. Those counts
+    are what makes combining parcels correct: the mean of two parcel means is
+    only the parcel-pair mean when both parcels have the same vertex count,
+    which Schaefer parcels do not -- see region_grouping.combine_values.
+    """
     img = nib.load(str(dscalar_path))
     data = img.get_fdata()[0]
     bm_axis = img.header.get_axis(1)
@@ -362,6 +506,9 @@ def parcellate_cortical_dscalar(dscalar_path, vertex_lut, label_names):
 
     rows = [(label_names.get(lid, f"label_{lid}"), sums[lid] / counts[lid])
             for lid in sorted(sums)]
+    if return_counts:
+        vertex_counts = {label_names.get(lid, f"label_{lid}"): counts[lid] for lid in sorted(sums)}
+        return rows, vertex_counts
     return rows
 
 
@@ -501,6 +648,74 @@ def plot_midbrain_bf_volumes(name_to_id, standard_rows, native_rows, out_dir, su
     plt.close(fig)
 
 
+WMPARC_COLOR = "#1B8A80"
+HCPEX_COLOR = "#E89B3C"
+
+
+def save_selected_regions_csv(path, selected):
+    with open(path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["region", "source", "group", "volume_mm3"])
+        for r in sorted(selected, key=lambda r: r["volume_mm3"], reverse=True):
+            writer.writerow([r["name"], r["source"], r["group"], f"{r['volume_mm3']:.3f}"])
+
+
+def _plot_selected_regions_axis(selected, out_path, subject_name, session_name, log_scale):
+    """One horizontal-bar figure of every selected region, largest at top."""
+    rows = sorted(selected, key=lambda r: r["volume_mm3"], reverse=True)
+    names = [r["name"] for r in rows]
+    vals = [r["volume_mm3"] for r in rows]
+    colors = [HCPEX_COLOR if r["source"].startswith("HCPex") else WMPARC_COLOR for r in rows]
+
+    height = max(4.0, 0.28 * len(rows) + 1.8)
+    fig, ax = plt.subplots(figsize=(11, height))
+    y = np.arange(len(rows))[::-1]
+    ax.barh(y, vals, color=colors, height=0.7)
+
+    positive = [v for v in vals if v > 0]
+    if log_scale:
+        if not positive:
+            plt.close(fig)
+            return 0
+        floor = min(positive) * 0.5
+        ax.set_xscale("log")
+        ax.set_xlim(left=floor, right=max(positive) * 2.0)
+        scale_note = "log scale"
+    else:
+        ax.set_xlim(left=0, right=(max(vals) * 1.18) if positive else 1.0)
+        scale_note = "linear scale"
+
+    for yi, val in zip(y, vals):
+        if val > 0:
+            ax.text(val, yi, f" {val:,.0f}", va="center", fontsize=7)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(names, fontsize=7)
+    ax.set_xlabel("Native-space volume (mm³)")
+    ax.set_title(f"{subject_name} / {session_name} — Selected Regions "
+                  f"({len(rows)} regions, {scale_note})")
+    ax.legend(handles=[
+        plt.Rectangle((0, 0), 1, 1, color=WMPARC_COLOR, label="wmparc (FreeSurfer)"),
+        plt.Rectangle((0, 0), 1, 1, color=HCPEX_COLOR, label="HCPex, warped to native"),
+    ], loc="lower right", fontsize=8)
+    ax.grid(axis="x", alpha=0.3, linestyle=":")
+    ax.set_axisbelow(True)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    return len(vals) - len(positive)
+
+
+def plot_selected_regions(selected, out_dir, subject_name, session_name):
+    """Writes the combined selected-region figure twice -- log and linear.
+    Returns the number of selected regions with zero volume (omitted from the
+    log figure, which cannot represent them)."""
+    _plot_selected_regions_axis(selected, out_dir / "selected_regions_volumes_linear.png",
+                                 subject_name, session_name, log_scale=False)
+    return _plot_selected_regions_axis(selected, out_dir / "selected_regions_volumes_log.png",
+                                        subject_name, session_name, log_scale=True)
+
+
 def plot_thickness_myelin_summary(thickness_rows, myelin_rows, out_dir, subject_name, session_name):
     thick_vals = [v for _n, v in thickness_rows]
     myelin_vals = [v for _n, v in myelin_rows]
@@ -518,9 +733,104 @@ def plot_thickness_myelin_summary(thickness_rows, myelin_rows, out_dir, subject_
     plt.close(fig)
 
 
+def save_combined_measures(out_dir, grouping_spec, subject_name, session_name,
+                            thickness_rows, thickness_counts, myelin_rows, myelin_counts,
+                            volume_rows, name_to_id, standard_rows, native_rows):
+    """Write a composite-region copy of every anatomical measure.
+
+    Each measure is grouped in its OWN name space -- Schaefer parcels for
+    thickness/myelin, FreeSurfer labels for wmparc volumes, HCPex labels for the
+    midbrain set -- so one spec ('lr', or a grouping file listing parcels from
+    any of them) covers all three. Nothing here overwrites the per-parcel
+    output: every file gets a _combined suffix.
+
+    Aggregation follows what the number is: volumes and voxel counts SUM, while
+    thickness and myelin take a vertex-count-weighted mean (see
+    region_grouping's module docstring).
+    """
+    written, summaries = [], []
+
+    # --- cortical scalars: weighted mean over vertices
+    for key, rows, counts, header, filename in (
+        ("cortical thickness", thickness_rows, thickness_counts, ["region", "thickness_mm"],
+         "cortical_thickness_schaefer400_combined.csv"),
+        ("myelin", myelin_rows, myelin_counts, ["region", "myelin_ratio"],
+         "myelin_schaefer400_combined.csv"),
+    ):
+        names = [n for n, _v in rows]
+        grouping = region_grouping.for_names(grouping_spec, names)
+        if not grouping:
+            continue
+        combined = region_grouping.combine_values(rows, grouping, rule="weighted_mean", weights=counts)
+        combined_counts = region_grouping.combine_weights(counts, grouping)
+        path = out_dir / filename
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(header + ["vertex_count", "n_parcels"])
+            members = dict(grouping.resolve(names))
+            for name, value in combined:
+                writer.writerow([name, f"{value:.6f}", int(round(combined_counts.get(name, 0))),
+                                 len(members.get(name, [name]))])
+        written.append(path.name)
+        summaries.append(f"{key}: {len(names)} parcels -> {len(combined)} regions")
+
+    # --- volumes: sum
+    vol_pairs = [(name, vol) for _lid, name, _cnt, vol in volume_rows]
+    vox_counts = {name: cnt for _lid, name, cnt, _vol in volume_rows}
+    grouping = region_grouping.for_names(grouping_spec, [n for n, _v in vol_pairs])
+    if grouping:
+        combined = region_grouping.combine_values(vol_pairs, grouping, rule="sum")
+        combined_vox = region_grouping.combine_weights(vox_counts, grouping)
+        members = dict(grouping.resolve([n for n, _v in vol_pairs]))
+        path = out_dir / "subcortical_volumes_wmparc_combined.csv"
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["region", "voxel_count", "volume_mm3", "n_parcels", "members"])
+            for name, value in combined:
+                parts = members.get(name, [name])
+                writer.writerow([name, int(round(combined_vox.get(name, 0))), f"{value:.3f}",
+                                 len(parts), ";".join(parts)])
+        written.append(path.name)
+        summaries.append(f"wmparc volumes: {len(vol_pairs)} labels -> {len(combined)} regions")
+
+        # reuse the existing selected-region figure for the combined volumes --
+        # same house style, log + linear, largest first
+        top = sorted(combined, key=lambda r: r[1], reverse=True)[:30]
+        selected = [{"name": n, "group": "key", "volume_mm3": v, "source": "wmparc"} for n, v in top]
+        _plot_selected_regions_axis(selected, out_dir / "combined_volumes_wmparc.png",
+                                     subject_name, session_name, log_scale=False)
+        written.append("combined_volumes_wmparc.png")
+
+    # --- midbrain / basal forebrain: sum, both spaces
+    mb_names = sorted(name_to_id, key=lambda n: name_to_id[n])
+    grouping = region_grouping.for_names(grouping_spec, mb_names)
+    if grouping:
+        native_pairs = [(n, native_rows[n][2]) for n in mb_names]
+        standard_pairs = [(n, standard_rows[n][2]) for n in mb_names]
+        native_combined = dict(region_grouping.combine_values(native_pairs, grouping, rule="sum"))
+        standard_combined = dict(region_grouping.combine_values(standard_pairs, grouping, rule="sum"))
+        members = dict(grouping.resolve(mb_names))
+        path = out_dir / "midbrain_basalforebrain_volumes_hcpex_combined.csv"
+        with open(path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["region", "standard_volume_mm3", "native_volume_mm3", "n_parcels", "members"])
+            for name, _members in grouping.resolve(mb_names):
+                writer.writerow([name, f"{standard_combined[name]:.3f}", f"{native_combined[name]:.3f}",
+                                 len(members.get(name, [name])), ";".join(members.get(name, [name]))])
+        written.append(path.name)
+        summaries.append(f"midbrain/basal forebrain: {len(mb_names)} labels -> {len(native_combined)} regions")
+
+    if grouping:
+        (out_dir / "region_groups_anat_combined.json").write_text(
+            json.dumps(grouping.to_dict(), indent=2) + "\n")
+        written.append("region_groups_anat_combined.json")
+    return written, summaries
+
+
 def write_manifest(out_dir, subject_name, session_name, thickness_path, myelin_path,
                     wmparc_path, atlas_path, lut_path, voxel_vol_mm3,
-                    hcpex_path, warp_field_path, ref_native_path, native_voxel_vol_mm3):
+                    hcpex_path, warp_field_path, ref_native_path, native_voxel_vol_mm3,
+                    selected_regions=None):
     text = (
         f"Cross-sectional anatomical analysis (v2)\n"
         f"Subject: {subject_name}\nSession: {session_name}\n\n"
@@ -540,6 +850,16 @@ def write_manifest(out_dir, subject_name, session_name, thickness_path, myelin_p
         f"No eTIV/aseg.stats found in this dataset's structural output -- all "
         f"volumes here are raw mm^3, not head-size-normalized.\n"
     )
+    if selected_regions:
+        names = ", ".join(r["name"] for r in selected_regions)
+        text += (
+            f"\nCombined selected-region figure "
+            f"(selected_regions_volumes_{{log,linear}}.png, selected_regions_volumes.csv):\n"
+            f"  {len(selected_regions)} region(s) chosen interactively this run, plotted "
+            f"together on one axis in native-space mm^3 (wmparc values as-is; HCPex values "
+            f"the warped native ones, never the standard-space ones).\n"
+            f"  Regions: {names}\n"
+        )
     (out_dir / "manifest.txt").write_text(text)
 
 
@@ -606,11 +926,13 @@ def main():
     vertex_lut, label_names = build_cortex_vertex_lut(atlas_path)
 
     print("  Parcellating cortical thickness (Schaefer-400)...")
-    thickness_rows = parcellate_cortical_dscalar(thickness_path, vertex_lut, label_names)
+    thickness_rows, thickness_counts = parcellate_cortical_dscalar(
+        thickness_path, vertex_lut, label_names, return_counts=True)
     save_named_csv(out_dir / "cortical_thickness_schaefer400.csv", ["region", "thickness_mm"], thickness_rows)
 
     print("  Parcellating myelin map / T1w-T2w ratio (Schaefer-400)...")
-    myelin_rows = parcellate_cortical_dscalar(myelin_path, vertex_lut, label_names)
+    myelin_rows, myelin_counts = parcellate_cortical_dscalar(
+        myelin_path, vertex_lut, label_names, return_counts=True)
     save_named_csv(out_dir / "myelin_schaefer400.csv", ["region", "myelin_ratio"], myelin_rows)
 
     print("  Computing subcortical/regional volumes (wmparc)...")
@@ -633,17 +955,43 @@ def main():
     plot_key_volumes(volume_rows, out_dir, subject.name, session.name)
     plot_midbrain_bf_volumes(name_to_id, standard_rows, native_rows, out_dir, subject.name, session.name)
     plot_thickness_myelin_summary(thickness_rows, myelin_rows, out_dir, subject.name, session.name)
+
+    pool = build_region_pool(volume_rows, name_to_id, native_rows)
+    selected = choose_regions(pool)
+    save_selected_regions_csv(out_dir / "selected_regions_volumes.csv", selected)
+    n_zero = plot_selected_regions(selected, out_dir, subject.name, session.name)
+    if n_zero:
+        print(f"    (note: {n_zero} selected region(s) have zero volume — shown in the "
+              f"linear figure, omitted from the log one)")
+
+    # Optional composite regions, written alongside the per-parcel output.
+    # Asked once and applied to all three name spaces (Schaefer, wmparc, HCPex).
+    grouping_spec = region_grouping.prompt_grouping([n for n, _v in thickness_rows])
+    combined_files = []
+    if grouping_spec:
+        combined_files, summaries = save_combined_measures(
+            out_dir, grouping_spec, subject.name, session.name,
+            thickness_rows, thickness_counts, myelin_rows, myelin_counts,
+            volume_rows, name_to_id, standard_rows, native_rows)
+        print("  Combined-region copies written:")
+        for line in summaries:
+            print(f"    {line}")
+
     write_manifest(out_dir, subject.name, session.name, thickness_path, myelin_path,
                     wmparc_path, atlas_path, lut_path, voxel_vol_mm3,
-                    hcpex_path, warp_field_path, ref_native_path, native_voxel_vol)
+                    hcpex_path, warp_field_path, ref_native_path, native_voxel_vol,
+                    selected_regions=selected)
 
     record_analysis(analysed_root, subject.name, session.name)
 
     print(f"\nAll analyses saved to {out_dir}")
     print("  cortical_thickness_schaefer400.csv, myelin_schaefer400.csv,")
     print("  subcortical_volumes_wmparc.csv, midbrain_basalforebrain_volumes_hcpex.csv,")
+    print("  selected_regions_volumes.csv,")
     print("  subcortical_volumes_key_structures.png, midbrain_basalforebrain_volumes_hcpex.png,")
-    print("  cortical_thickness_myelin_summary.png, manifest.txt")
+    print("  cortical_thickness_myelin_summary.png,")
+    print("  selected_regions_volumes_log.png, selected_regions_volumes_linear.png,")
+    print("  manifest.txt")
 
 
 if __name__ == "__main__":

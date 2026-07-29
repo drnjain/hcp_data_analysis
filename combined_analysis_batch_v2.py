@@ -64,6 +64,7 @@ import traceback
 from pathlib import Path
 
 import cross_sectional_analysis_v2 as csa
+import region_grouping
 import run_fc_pipeline_v2 as fcp
 
 
@@ -133,17 +134,17 @@ def required_anat_files(session):
     }, []
 
 
-def run_anat(subject, session, analysed_root, anat_paths, shared):
+def run_anat(subject, session, analysed_root, anat_paths, shared, grouping=None):
     anat_out_dir = analysed_root / subject.name / session.name / "anat"
     anat_out_dir.mkdir(parents=True, exist_ok=True)
 
-    thickness_rows = csa.parcellate_cortical_dscalar(
-        anat_paths["thickness_path"], shared["vertex_lut"], shared["label_names"])
+    thickness_rows, thickness_counts = csa.parcellate_cortical_dscalar(
+        anat_paths["thickness_path"], shared["vertex_lut"], shared["label_names"], return_counts=True)
     csa.save_named_csv(anat_out_dir / "cortical_thickness_schaefer400.csv",
                         ["region", "thickness_mm"], thickness_rows)
 
-    myelin_rows = csa.parcellate_cortical_dscalar(
-        anat_paths["myelin_path"], shared["vertex_lut"], shared["label_names"])
+    myelin_rows, myelin_counts = csa.parcellate_cortical_dscalar(
+        anat_paths["myelin_path"], shared["vertex_lut"], shared["label_names"], return_counts=True)
     csa.save_named_csv(anat_out_dir / "myelin_schaefer400.csv", ["region", "myelin_ratio"], myelin_rows)
 
     volume_rows, voxel_vol_mm3 = csa.extract_subcortical_volumes(anat_paths["wmparc_path"], shared["fs_lut"])
@@ -167,10 +168,16 @@ def run_anat(subject, session, analysed_root, anat_paths, shared):
                         shared["hcpex_path"], anat_paths["warp_field_path"], anat_paths["ref_native_path"],
                         native_voxel_vol)
 
+    if grouping:
+        csa.save_combined_measures(
+            anat_out_dir, grouping, subject.name, session.name,
+            thickness_rows, thickness_counts, myelin_rows, myelin_counts,
+            volume_rows, shared["name_to_id"], shared["standard_rows"], native_rows)
+
     csa.record_analysis(analysed_root, subject.name, session.name)
 
 
-def run_func(subject, session, analysed_root, vol_bold, shared, standard_selection):
+def run_func(subject, session, analysed_root, vol_bold, shared, standard_selection, grouping=None):
     subject_dir = analysed_root / subject.name
     func_out_dir = subject_dir / session.name / "func"
     func_out_dir.mkdir(parents=True, exist_ok=True)
@@ -191,10 +198,15 @@ def run_func(subject, session, analysed_root, vol_bold, shared, standard_selecti
     fcp.run_and_save_analysis(triangle_ts, triangle_names, fcp.TRIANGLE_SN, func_out_dir, "triangle_sn_hcpex",
                                subject.name, session.name, use_graph_plot=True)
 
+    if grouping:
+        fcp.run_grouped_analysis(all_ts, all_names, standard_selection, grouping, func_out_dir,
+                                  "standard_hcpex", subject.name, session.name)
+
     fcp.record_analysis(analysed_root, subject.name, session.name)
 
 
-def process_session(subject, session, analysed_root, shared, standard_selection, force):
+def process_session(subject, session, analysed_root, shared, standard_selection, force,
+                    grouping=None):
     anat_out_dir = analysed_root / subject.name / session.name / "anat"
     func_out_dir = analysed_root / subject.name / session.name / "func"
 
@@ -219,13 +231,13 @@ def process_session(subject, session, analysed_root, shared, standard_selection,
 
     parts = {}
     if need_anat:
-        run_anat(subject, session, analysed_root, anat_paths, shared)
+        run_anat(subject, session, analysed_root, anat_paths, shared, grouping)
         parts["anat"] = "done"
     else:
         parts["anat"] = "skipped"
 
     if need_func:
-        run_func(subject, session, analysed_root, vol_bold, shared, standard_selection)
+        run_func(subject, session, analysed_root, vol_bold, shared, standard_selection, grouping)
         parts["func"] = "done"
     else:
         parts["func"] = "skipped"
@@ -240,9 +252,20 @@ def main():
     ap.add_argument("--force", action="store_true",
                      help="re-run both parts for sessions that already have them")
     ap.add_argument("--subjects", help="comma-separated subject folder names to restrict to")
+    ap.add_argument("--groups", default=region_grouping.DEFAULT_SPEC,
+                     help="ALSO write composite-region copies of the anatomical measures and an "
+                          "extra combined FC matrix, beside the per-parcel output "
+                          "(default: lr; 'none' to skip): " + region_grouping.BUILTIN_HELP)
     ap.add_argument("--parcels", default=None,
                      help="parcel selection for the 'standard' FC matrix (default: prompt interactively)")
     args = ap.parse_args()
+
+    # Validate --groups before ANY work: a typo should cost a second, not a
+    # session's extraction (or a whole batch's).
+    try:
+        groups_desc = region_grouping.validate_spec(args.groups)
+    except ValueError as exc:
+        sys.exit(f"--groups: {exc}")
 
     raw_root = Path(args.raw_root).expanduser() if args.raw_root else csa.find_data_root()
     if not raw_root.is_dir():
@@ -284,11 +307,25 @@ def main():
         "name_to_id": name_to_id, "standard_rows": standard_rows,
     }
 
+    grouping = None
+    if args.groups and str(args.groups).strip().lower() != "none":
+        try:
+            grouping = region_grouping.load(args.groups, standard_selection)
+        except ValueError as exc:
+            sys.exit(f"--groups: {exc}")
+        errors, _warnings = grouping.validate(standard_selection)
+        if errors:
+            sys.exit("--groups: " + "; ".join(errors))
+        print(f"Combining: {grouping.source} -- the FC selection's {len(standard_selection)} parcels "
+              f"become {len(grouping.resolve(standard_selection))} region(s); anatomical measures are "
+              f"combined in their own name spaces.\n")
+
     results = {"done": [], "skipped": [], "missing": [], "failed": []}
     for subject, session in pairs:
         label = f"{subject.name}/{session.name}"
         try:
-            status, detail = process_session(subject, session, analysed_root, shared, standard_selection, args.force)
+            status, detail = process_session(subject, session, analysed_root, shared, standard_selection,
+                                              args.force, grouping)
         except Exception as exc:
             print(f"[FAILED]  {label} -- {exc}")
             traceback.print_exc()
