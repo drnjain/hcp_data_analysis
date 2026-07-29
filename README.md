@@ -4,6 +4,54 @@ This is the single reference for this folder: how the data is organized, how
 each script works, the exact command to run it, every output path, and every
 requirement.
 
+> **Note (2026-07-24):** README.txt's per-script command/output/requirements
+> index has been fully merged into this file, and README.txt has been
+> retired (its original content is preserved at `README.txt.bak` in this
+> folder in case anything needs cross-checking). This file is now the sole
+> authoritative reference for this folder.
+
+> **Note (2026-07-23 rename):** the original `run_fc_pipeline.py` (CIFTI-cortex,
+> 427-parcel, `.npy` output) and its batch counterpart `run_fc_pipeline_batch.py`
+> have been removed. `run_fc_pipeline_v2.py` was renamed to `run_fc_pipeline_v1.py`,
+> and `run_fc_pipeline_v3.py` was renamed to `run_fc_pipeline_v2.py` — filenames
+> only, no code changes, so each script's internal run-count-log and
+> cached-timeseries filenames still use their pre-rename names (called out where
+> relevant below). `cross_sectional_analysis.py` was likewise renamed to
+> `cross_sectional_analysis_v1.py`. `run_fc_pipeline_batch_v2.py` was rebuilt
+> from scratch as a batch driver for the *current* `run_fc_pipeline_v2.py`
+> (HCPex-only) — it is a different script than the name used to refer to. A new
+> `cross_sectional_analysis_batch_v2.py` was also added.
+
+> **Note (2026-07-27):** `run_fc_pipeline_batch_v2.py`'s `--parcels` flag no
+> longer silently defaults to `all` when omitted — it now prompts
+> interactively once (same atlas-group card picker as the single-session
+> script) before the batch starts, matching the interactive script's own
+> behavior instead of silently running against every parcel. `combined_analysis_v2.py`
+> was rebuilt and extended: it now also runs `organize_hcp_data.py`'s
+> data-organization step first, using the same Input/Output prompts as that
+> script's required `--input`/`--output` flags (see Section 6). A new
+> `combined_analysis_batch_v2.py` was added — the non-interactive batch
+> driver for `combined_analysis_v2.py`'s two analysis parts (organize step
+> excluded).
+
+> **Note (2026-07-29):** a new shared module, `region_grouping.py`, lets every
+> v2 script combine parcels into composite regions (left+right pairs, network
+> components, or a custom JSON). It is on by default: every run now writes the
+> per-parcel results **and** a left/right-combined copy beside them, controlled
+> by `--groups` on the batch drivers and `group_analysis_cross_sectional.py`, or
+> by a prompt in the three interactive scripts. `--groups none` restores the old
+> single-output behaviour. See Section 9, plus the per-script notes in Sections
+> 4-7. `parcellate_cortical_dscalar()` gained an optional `return_counts`
+> argument in the same pass (backwards compatible).
+
+Also present in this folder but not covered below: the one-off pptx-editing
+scripts that built up `rsfMRI_processing_summary_with_anat_appendix.pptx`
+slide by slide have been removed — their effects are already permanently
+baked into that presentation, so nothing currently visible depends on them
+(see `SESSION_SUMMARY.md` for what each one did). The two *reusable* pptx
+builders (Section 8 below) were kept, since those regenerate their decks
+from scratch and are meant to be re-run whenever a source script changes.
+
 ### Python dependencies
 
 ```bash
@@ -29,14 +77,15 @@ which of those it needs.
 | `organize_hcp_data.py` | `python3 organize_hcp_data.py --input DIR --output DIR` | Sort raw HCP zip downloads into `sub-*/ses-*/{anat,func,concat}/` |
 | `plot_roi_amplitudes.py` | `python3 plot_roi_amplitudes.py --group CSV --data CSV` | Interactive box plots of ROI BOLD amplitudes by visit |
 | `run_fc_pipeline_v1.py` | `python3 run_fc_pipeline_v1.py` | Interactive FC pipeline, 427 parcels (Schaefer + Tian-S1 + CIT168 + HCPex) |
-| `run_fc_pipeline_v2.py` | `python3 run_fc_pipeline_v2.py` | Interactive FC pipeline, HCPex-only, 426 parcels |
-| `run_fc_pipeline_batch_v2.py` | `python3 run_fc_pipeline_batch_v2.py /path/to/Raw_Data` | Non-interactive batch driver for `run_fc_pipeline_v2.py` (73 sessions currently) |
+| `run_fc_pipeline_v2.py` | `python3 run_fc_pipeline_v2.py` | Interactive FC pipeline, HCPex-only, 426 parcels; also prompts to write a left/right-combined matrix |
+| `run_fc_pipeline_batch_v2.py` | `python3 run_fc_pipeline_batch_v2.py /path/to/Raw_Data [--groups lr]` | Non-interactive batch driver for `run_fc_pipeline_v2.py` (73 sessions currently) |
 | `cross_sectional_analysis_v1.py` | `python3 cross_sectional_analysis_v1.py` | Cortical thickness/myelin (Schaefer-400) + wmparc regional volumes |
-| `cross_sectional_analysis_v2.py` | `python3 cross_sectional_analysis_v2.py` | v1 + VTA/SN/Nucleus Basalis volumes via HCPex (standard + native space) |
-| `cross_sectional_analysis_batch_v2.py` | `python3 cross_sectional_analysis_batch_v2.py /path/to/Raw_Data` | Non-interactive batch driver for `cross_sectional_analysis_v2.py` |
+| `cross_sectional_analysis_v2.py` | `python3 cross_sectional_analysis_v2.py` | v1 + VTA/SN/Nucleus Basalis volumes via HCPex (standard + native space), + a combined figure of any regions you pick; also prompts to write composite-region copies of every measure |
+| `cross_sectional_analysis_batch_v2.py` | `python3 cross_sectional_analysis_batch_v2.py /path/to/Raw_Data [--groups lr]` | Non-interactive batch driver for `cross_sectional_analysis_v2.py` |
 | `combined_analysis_v2.py` | `python3 combined_analysis_v2.py` | Organizes new zip data, then runs `cross_sectional_analysis_v2.py` + `run_fc_pipeline_v2.py` back to back for one subject/session |
-| `combined_analysis_batch_v2.py` | `python3 combined_analysis_batch_v2.py /path/to/Raw_Data` | Non-interactive batch driver for both analysis parts of `combined_analysis_v2.py` (organize step excluded) |
-| `group_analysis_cross_sectional.py` | `python3 group_analysis_cross_sectional.py /path/to/Raw_Data` | Group-level stats (age/sex/custom, FDR-corrected) on the extracted anatomical measures, one session per subject |
+| `combined_analysis_batch_v2.py` | `python3 combined_analysis_batch_v2.py /path/to/Raw_Data [--groups lr]` | Non-interactive batch driver for both analysis parts of `combined_analysis_v2.py` (organize step excluded) |
+| `group_analysis_cross_sectional.py` | `python3 group_analysis_cross_sectional.py /path/to/Raw_Data [--groups lr]` | Group-level stats (age/sex/custom, FDR-corrected) on the extracted anatomical measures, one session per subject |
+| `region_grouping.py` | imported, not run directly (`--groups` flag / prompt) | Combine parcels into composite regions (left+right, network components, or a custom JSON) — see Section 9 |
 | `build_scripts_overview_presentation.py` | `python3 build_scripts_overview_presentation.py` | Rebuilds the standalone "Data Analysis Scripts Overview" pptx |
 | `build_combined_presentation.py` | `python3 build_combined_presentation.py` | Merges the rsfMRI summary deck + Scripts Overview deck into one |
 
@@ -280,13 +329,90 @@ python3 cross_sectional_analysis_v2.py
   standard_voxel_count, standard_volume_mm3, native_voxel_count,
   native_volume_mm3`
 - `midbrain_basalforebrain_volumes_hcpex.png`
+- `selected_regions_volumes.csv` + `selected_regions_volumes_log.png` +
+  `selected_regions_volumes_linear.png` — the combined selected-region figure
+  (see below)
 - Own run-count log: `Analysed_data/analysis_log_anat_v2.json` (separate from v1's)
+
+#### Combined selected-region figure (interactive)
+
+(New 2026-07-28.) The two standard volume figures split the regions across
+separate plots — `subcortical_volumes_key_structures.png` (wmparc) and
+`midbrain_basalforebrain_volumes_hcpex.png` (HCPex). Both are still written
+unchanged. **In addition**, after those are saved the script prompts for a set
+of regions and plots them *all together on one axis*.
+
+The selection pool is every region the run extracted, grouped for quick
+picking:
+
+| Group | Contents |
+|---|---|
+| `key` | The 7 key subcortical structures × L/R (wmparc) |
+| `midbrain` | VTA, SNc, SNr, NbM × L/R (HCPex, native space) |
+| `other` | Other non-cortical wmparc labels (Brain-Stem, CSF, …) |
+| `cortex` | `ctx-*` cortical ribbon labels (wmparc) |
+| `wm` | `wm-*` and unsegmented white-matter labels (wmparc) |
+
+Selection accepts individual numbers (`1,5`), ranges (`10-14`), group names,
+or `all` — combine any of them with commas. Pressing Enter takes the default,
+`key + midbrain`, which is exactly the union of the two standard figures.
+
+The same selection is rendered **twice**, as horizontal bars sorted
+largest-first:
+
+- `selected_regions_volumes_log.png` — log x-axis. Keeps small nuclei legible:
+  VTA (~60 mm³) stays readable next to the thalamus (~7,700 mm³).
+- `selected_regions_volumes_linear.png` — linear x-axis. Preserves true
+  proportions, at the cost of the smallest nuclei being near-invisible.
+
+Bars are colour-coded by source (teal = wmparc/FreeSurfer, orange = HCPex
+warped to native). **All values on this figure are native-space mm³** so the
+two atlas sources are directly comparable — the HCPex numbers used are the
+warped native ones, never the standard-space ones. The chosen regions are also
+written to `selected_regions_volumes.csv` (`region, source, group,
+volume_mm3`) and listed in `manifest.txt`, so the figure is reproducible after
+the fact.
+
+A region with zero volume (possible if the warp loses a very small HCPex
+structure) appears in the linear figure but cannot be drawn on a log axis; the
+script prints a count when this happens.
+
+**This step is interactive and lives only in `main()`** — the batch drivers
+(`cross_sectional_analysis_batch_v2.py`, `combined_analysis_batch_v2.py`) call
+the extraction/plotting functions directly and are unaffected, still writing
+the three standard figures only.
 
 **Requires:** everything v1 requires, plus `HCPex_2mm.nii` +
 `HCPex_LookUpTable.txt` under `<raw root>/atlases/` (already present from
 `run_fc_pipeline_v2.py`), and FSL's `applywarp` on `PATH`.
 
 **Note:** same eTIV caveat as v1 — all volumes reported are raw mm³.
+
+#### Composite-region copies (2026-07-29)
+
+After the standard outputs, the script asks whether to also write
+composite-region copies of every measure (Enter = left/right pairs; `[n]` to
+skip). The batch variant takes `--groups` instead, default `lr`. Nothing is
+overwritten — every combined file carries a `_combined` suffix:
+
+```
+cortical_thickness_schaefer400_combined.csv    region, thickness_mm, vertex_count, n_parcels
+myelin_schaefer400_combined.csv                region, myelin_ratio, vertex_count, n_parcels
+subcortical_volumes_wmparc_combined.csv        region, voxel_count, volume_mm3, n_parcels, members
+midbrain_basalforebrain_volumes_hcpex_combined.csv
+                                               region, standard_volume_mm3, native_volume_mm3, n_parcels, members
+combined_volumes_wmparc.png                    top 30 combined volumes, largest first
+region_groups_anat_combined.json               exactly what was merged into what
+```
+
+Volumes are **summed**; cortical thickness and myelin take a **vertex-count-
+weighted mean** (the plain mean of two parcel means is wrong when the parcels
+differ in size). See Section 9 for the rules and the Schaefer caveat.
+
+**API change:** `parcellate_cortical_dscalar()` gained
+`return_counts=True`, which additionally returns `{region: vertex_count}` — the
+weights the combining needs. The 3-argument call still behaves exactly as
+before, so existing callers are unaffected.
 
 ### Batch variant — `cross_sectional_analysis_batch_v2.py`
 
@@ -314,14 +440,18 @@ python3 cross_sectional_analysis_batch_v2.py /path/to/Raw_Data --force --subject
 - `--force` — re-run sessions that already have `anat/manifest.txt`
 - `--subjects sub-A,sub-B` — restrict to specific subject folder names
 
-**Output** (per session, same as `cross_sectional_analysis_v2.py`) —
-`Analysed_data/<subject>/<session>/anat/`:
+**Output** (per session) — `Analysed_data/<subject>/<session>/anat/`:
 `cortical_thickness_schaefer400.csv`, `myelin_schaefer400.csv`,
 `subcortical_volumes_wmparc.csv`, `midbrain_basalforebrain_volumes_hcpex.csv`,
 `subcortical_volumes_key_structures.png`,
 `midbrain_basalforebrain_volumes_hcpex.png`,
 `cortical_thickness_myelin_summary.png`, `manifest.txt`. Shares
 `analysis_log_anat_v2.json` with `cross_sectional_analysis_v2.py`.
+
+This is the same set the interactive script writes **except** the combined
+selected-region outputs (`selected_regions_volumes.csv` /
+`selected_regions_volumes_{log,linear}.png`) — that step needs an interactive
+region choice, so it's deliberately not part of the batch path.
 
 **Requires:** same atlas files + FSL `applywarp` as `cross_sectional_analysis_v2.py`.
 
@@ -340,6 +470,7 @@ volumes with the standard-vs-native split) converging on the saved output.
 | VTA / SN / Nucleus Basalis volumes | — not covered | ✓ via HCPex, standard + native space |
 | External dependency | nibabel only | + FSL `applywarp` on PATH |
 | Extra output file | — | `midbrain_basalforebrain_volumes_hcpex.csv`, `midbrain_basalforebrain_volumes_hcpex.png` |
+| Combined selected-region figure | — | ✓ interactive picker → `selected_regions_volumes_{log,linear}.png` + `.csv` |
 | Run-count log | `analysis_log_anat.json` | `analysis_log_anat_v2.json` (separate) |
 | Batch driver | — none | `cross_sectional_analysis_batch_v2.py` |
 
@@ -459,6 +590,28 @@ fresh extraction, e.g. after updating the atlas file).
 (full descriptive parcel names — not the short-code
 `HCPex_basal_forebrain_labels.txt` that `run_fc_pipeline_v1.py`'s Group D
 uses).
+
+#### Combined-region FC matrix (2026-07-29)
+
+After the parcel picker, the script asks whether to also compute the standard
+matrix over composite regions (Enter = left/right pairs; `[n]` to skip). The
+batch variant takes `--groups` instead, default `lr`. The four fixed
+graph/triangle analyses are untouched — the triangle ones already combine L/R by
+construction.
+
+The parcels are combined **first** (their timeseries averaged sample by sample)
+and the correlation computed on the composites. That is deliberately not the
+same as averaging the parcel-pair correlations afterwards: the first treats a
+pair as one region, the second averages two measurements of different regions.
+
+```
+fc_matrix_corr_standard_hcpex_combined.csv      (+ _fisherz)
+fc_matrix_standard_hcpex_combined.png/.svg      heatmap — same form as its parent analysis
+fc_matrix_standard_hcpex_combined_graph.png/.svg
+                                                node-link view, only when regions <= MAX_GRAPH_NODES (12)
+region_names_standard_hcpex_combined.txt
+region_groups_standard_hcpex_combined.json
+```
 
 ### Batch variant — `run_fc_pipeline_batch_v2.py`
 
@@ -580,9 +733,18 @@ extraction/analysis/plotting/logging functions unchanged.
   does **not** abort if the input folder currently has zero new zip files —
   it just notes that and continues into the anatomical/functional analysis,
   since a routine re-analysis run with no new data to organize shouldn't be
-  blocked. Reuses `organize_hcp_data.py`'s own `process_zip()` /
-  `MANIFEST_FIELDS` unchanged, so extraction/archiving/manifest behavior is
-  otherwise identical to running that script directly (Section 2).
+  blocked. Each zip also runs in its own `try`/`except` — unlike the
+  standalone script's own `main()` loop, a transient failure reading one zip
+  (e.g. an I/O error off a network-mounted raw-data volume) is logged as an
+  `error_exception` manifest row and skipped, rather than aborting the whole
+  combined run before it ever reaches the subject/session picker or the
+  analysis parts. The failure point (`extract_zip()`'s staging-directory
+  extraction) is always before `merge_tree()` ever touches the real target
+  folder, so a failed zip is safe to retry on a later run — nothing partial
+  is left in `<raw root>/sub-*/ses-*/`. Otherwise reuses
+  `organize_hcp_data.py`'s own `process_zip()` / `MANIFEST_FIELDS`
+  unchanged, so extraction/archiving/manifest behavior matches running that
+  script directly (Section 2).
 - **Part 1 — cross-sectional anatomical analysis (v2):** cortical thickness +
   myelin (Schaefer-400), wmparc regional volumes, and VTA/SN/Nucleus Basalis
   volumes via HCPex (standard + native space). Identical to
@@ -621,6 +783,14 @@ library).
 
 **Note:** not documented in either pptx deck (`Data_Analysis_Scripts_Overview.pptx`
 or the combined deck) as of this writing — ask before adding it there if that's wanted.
+
+#### Region grouping (2026-07-29)
+
+One grouping question per run, asked after the parcel picker, applied to **both**
+halves: the anatomical measures (in the Schaefer / wmparc / HCPex name spaces,
+each resolved separately) and the standard FC matrix. The batch variant takes
+`--groups` instead, default `lr`. Outputs are the union of the two lists in
+Sections 4 and 5. See Section 9.
 
 ### Batch variant — `combined_analysis_batch_v2.py`
 
@@ -746,3 +916,28 @@ differences in raw volume can be confounded by head size, and there's no
 eTIV available in this dataset to correct for it.
 
 ---
+
+### Region grouping — two passes per mode (2026-07-29)
+
+`--groups` (default `lr`) makes the script run **every mode twice**: once with
+one region per parcel, once over composite regions, into separate folders.
+
+```
+Analysed_data/group_analysis/<mode>/           one region per parcel
+Analysed_data/group_analysis/<mode>_combined/  same modes over composite regions
+                                                (+ <measure>_region_groups.json)
+```
+
+Each pass is FDR-corrected over **its own** region count — that is precisely
+what combining buys you (fewer comparisons), and it means a `p_fdr` from
+`<mode>/` is **not** directly comparable with one from `<mode>_combined/`. The
+log labels each pass ("one region per parcel" / "composite regions") and the
+mode manifest records the grouping and the rule used.
+
+Combining here happens on the way into the model — the per-subject CSVs stay the
+source of truth and nothing is re-extracted. Volumes sum; the cortical measures
+use an **unweighted** mean, because the per-subject CSVs carry no vertex counts
+(the per-session scripts in Section 4 do weight them). That difference is
+recorded in the manifest.
+
+`--groups none` restores the previous single-pass behaviour.
