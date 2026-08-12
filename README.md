@@ -24,7 +24,7 @@ requirement.
 
 > **Note (2026-07-27):** `run_fc_pipeline_batch_v2.py`'s `--parcels` flag no
 > longer silently defaults to `all` when omitted — it now prompts
-> interactively once (same atlas-group card picker as the single-session
+> interactively once (same single-card parcel picker as the single-session
 > script) before the batch starts, matching the interactive script's own
 > behavior instead of silently running against every parcel. `combined_analysis_v2.py`
 > was rebuilt and extended: it now also runs `organize_hcp_data.py`'s
@@ -390,10 +390,34 @@ the three standard figures only.
 
 #### Composite-region copies (2026-07-29)
 
-After the standard outputs, the script asks whether to also write
-composite-region copies of every measure (Enter = left/right pairs; `[n]` to
-skip). The batch variant takes `--groups` instead, default `lr`. Nothing is
-overwritten — every combined file carries a `_combined` suffix:
+Every anatomical measure is written as the same **four fixed views** the FC
+pipeline uses — there is no prompt, and nothing is overwritten:
+
+| view | file suffix | contents |
+|---|---|---|
+| 1 | `_left` | left-hemisphere regions only |
+| 2 | `_right` | right-hemisphere regions only |
+| 3 | *(none)* | every region — the original file |
+| 4 | `_combined` | left/right pairs merged into one region |
+
+**Row order matches the FC matrices**: each region's left and right sit adjacent,
+left first (`Left-Hippocampus, Right-Hippocampus, Left-Amygdala, …`), instead of
+label order which puts every left first and its right partner far below. Applied
+inside the CSV writers, so the interactive script, all three batch drivers and
+the browser app inherit it. Unlateralised structures (Brain-Stem, CSF) follow
+after. The *figures* are unaffected — they deliberately sort largest-first by
+value. Downstream readers key on the `region` column, not row position, so
+`group_analysis_cross_sectional.py` is unaffected.
+
+Hemisphere is detected per naming convention via
+`region_grouping.split_hemisphere()`, so each measure splits correctly in its
+own name space — Schaefer `7Networks_LH_…`, wmparc `Left-…` / `ctx-lh-…`, HCPex
+`…_L`. Structures with no hemisphere (Brain-Stem, CSF) appear in neither the
+left nor the right file, only in views 3 and 4.
+
+`--groups` on the batch variants still adds a **further** grouping
+(`component`, a custom JSON) beside these four, written under its own tag so it
+cannot overwrite view 4. The `_combined` files:
 
 ```
 cortical_thickness_schaefer400_combined.csv    region, thickness_mm, vertex_count, n_parcels
@@ -568,7 +592,9 @@ which v1 used). Every run always computes all five analyses for the chosen
 session (standard, graph_vta, graph_sn, triangle_vta, triangle_sn), saved as
 CSV into their own `Analysed_data/<subject>/<session>/func/` subfolder —
 mirroring the `anat/` subfolder `cross_sectional_analysis_v2.py` uses —
-filenames suffixed `_hcpex`.
+filenames suffixed `_hcpex`. **The standard analysis is written as four
+connectivity maps** (left only / right only / both / left+right combined) — see
+below.
 
 **Standard command:**
 ```bash
@@ -580,6 +606,31 @@ python3 run_fc_pipeline_v2.py
 - `fc_matrix_corr_<mode>_hcpex.csv`, `fc_matrix_fisherz_<mode>_hcpex.csv`
 - `region_names_<mode>_hcpex.txt`
 - `fc_matrix_<mode>_hcpex.png` / `.svg`
+
+**The standard matrix is written as four maps**, whatever number of parcels you
+pick. With a selection of N parcels:
+
+| map | file suffix | contents |
+|---|---|---|
+| 1 | `standard_hcpex_left` | only the `_L` parcels of the selection |
+| 2 | `standard_hcpex_right` | only the `_R` parcels |
+| 3 | `standard_hcpex` | all N parcels, left and right side by side |
+| 4 | `standard_hcpex_combined` | each L/R pair merged into one region (`Hippocampus_L` + `Hippocampus_R` → `Hippocampus`) |
+
+**Region order.** All four maps are laid out so each region's left and right sit
+adjacent, left first — `Hippocampus_L, Hippocampus_R, SNc_L, SNc_R, …` — with
+regions in the order you first selected them. Without this the matrix follows
+HCPex label order, which puts every left parcel first and its right counterpart
+300+ labels later (`Hippocampus_L` is 80, `Hippocampus_R` is 260), so a region's
+two halves land at opposite corners of the heatmap. Maps 1, 2 and 4 follow the
+same region order, so the four can be read side by side.
+
+Map 3 keeps the bare `standard_hcpex` name it has always had, so existing
+outputs and skip-if-done checks are unaffected. **Map 4 is always produced** —
+it no longer depends on the grouping prompt. Maps 1, 2 and 4 need at least 2
+regions to correlate; if a selection cannot reach that (e.g. one parcel in a
+hemisphere) that map is skipped with a printed reason and the others still run.
+The graph/triangle analyses are unaffected.
 
 Full 426-parcel timeseries cached per-subject at
 `Analysed_data/<subject>/timeseries_hcpex_<session>.csv` (delete to force a
@@ -593,9 +644,12 @@ uses).
 
 #### Combined-region FC matrix (2026-07-29)
 
-After the parcel picker, the script asks whether to also compute the standard
-matrix over composite regions (Enter = left/right pairs; `[n]` to skip). The
-batch variant takes `--groups` instead, default `lr`. The four fixed
+**There is no grouping prompt** — the four maps above are fixed, so the question
+was redundant and has been removed from every interactive script. `--groups` on
+the batch drivers (and the app) survives only to add a **further** grouping
+(`component`, `component-hemi`, a custom JSON) on top of the four, written under
+its own suffix so it cannot overwrite map 4; passing `lr` is recognised as
+already-covered and skipped rather than duplicated. The four fixed
 graph/triangle analyses are untouched — the triangle ones already combine L/R by
 construction.
 
@@ -627,10 +681,10 @@ over every `sub-*/ses-*` session found under a raw data root. The
 "standard" matrix's parcel selection is made **once** up front and applied
 identically to every session, since HCPex's 426 parcel names/order are fixed
 by the atlas, not subject-specific. If `--parcels` is omitted, this prompts
-interactively **once** using the same atlas-group card picker as the
+interactively **once** using the same single-card parcel picker as the
 single-session script (before the batch starts, not per session) — pass a
-value (`all`, a bare group letter, or labels/ranges like `'A1, B2, B4'` /
-`'A1-10'`) to skip the prompt and run fully non-interactively. Sessions that already have a standard FC matrix are
+value (`all`, or HCPex label numbers/ranges like `'80, 260, 388'` /
+`'1-10'`) to skip the prompt and run fully non-interactively. Sessions that already have a standard FC matrix are
 skipped unless `--force`; each session runs in its own `try`/`except` so one
 failure doesn't abort the batch; a done/skipped/missing/failed summary
 prints at the end. Shares `analysis_log_v3.json` with the interactive
@@ -651,7 +705,7 @@ python3 run_fc_pipeline_batch_v2.py /path/to/Raw_Data --force --parcels all --su
 - `--force` — re-run sessions that already have `fc_matrix_corr_standard_hcpex.csv`
 - `--subjects sub-A,sub-B` — restrict to specific subject folder names
 - `--parcels all` — parcel selection for the "standard" matrix; if omitted,
-  prompts interactively once (same atlas-group card picker as the
+  prompts interactively once (same single-card parcel picker as the
   single-session script) instead of defaulting silently to `all`
 
 **Output** (per session, see `run_fc_pipeline_v2.py`) —
@@ -770,6 +824,13 @@ python3 combined_analysis_v2.py
 Prompts, in order: Input (zip folder) → Output (raw data root) → subject →
 session → "standard" FC parcel selection.
 
+**Same four views as the standalone scripts.** Part 1 writes the four
+anatomical views (`_left`, `_right`, plain, `_combined`) of every measure and
+Part 2 writes the four connectivity maps, because both call the same shared
+functions (`csa.save_hemisphere_measures` / `csa.save_combined_measures` and
+`fcp.run_standard_maps`) rather than reimplementing them — so this script cannot
+drift from `cross_sectional_analysis_v2.py` or `run_fc_pipeline_v2.py`.
+
 **Output:**
 - `<raw root>/sub-*/ses-*/...`, `<raw root>/archive/`, `<raw root>/manifest.csv` — from the organize step (Part 0)
 - `Analysed_data/<subject>/<session>/anat/` — see `cross_sectional_analysis_v2.py` (Section 4)
@@ -828,7 +889,7 @@ python3 combined_analysis_batch_v2.py /path/to/Raw_Data --force --parcels all --
 - `--force` — re-run **both** parts for sessions that already have them
 - `--subjects sub-A,sub-B` — restrict to specific subject folder names
 - `--parcels` — parcel selection for the "standard" FC matrix; if omitted,
-  prompts interactively once (same atlas-group card picker as the
+  prompts interactively once (same single-card parcel picker as the
   single-session script)
 
 **Output** (per session, union of both parts) —
