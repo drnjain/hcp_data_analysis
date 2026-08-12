@@ -578,11 +578,29 @@ def extract_native_space_hcpex_volumes(native_hcpex_path, name_to_id):
     return rows, voxel_vol_mm3
 
 
+def order_rows(rows, name_at=0):
+    """Reorder (name, ...) tuples so each region's left and right sit adjacent,
+    left first -- the same layout the FC matrices use, so a CSV and a
+    connectivity map list their regions in the same sequence.
+
+    Applied inside the writers rather than at each call site, so the interactive
+    script, all three batch drivers and the browser app inherit it without
+    needing to remember. Ordering only; no row is added or dropped."""
+    order = region_grouping.order_by_region_pairs([r[name_at] for r in rows])
+    by_name = {}
+    for r in rows:
+        by_name.setdefault(r[name_at], []).append(r)
+    out = []
+    for name in order:
+        out.append(by_name[name].pop(0))
+    return out
+
+
 def save_named_csv(path, header, rows):
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(header)
-        for name, value in rows:
+        for name, value in order_rows(rows):
             writer.writerow([name, f"{value:.6f}"])
 
 
@@ -590,7 +608,7 @@ def save_volume_csv(path, rows):
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["label_id", "region", "voxel_count", "volume_mm3"])
-        for lid, name, cnt, vol in rows:
+        for lid, name, cnt, vol in order_rows(rows, name_at=1):
             writer.writerow([lid, name, cnt, f"{vol:.3f}"])
 
 
@@ -602,7 +620,9 @@ def save_midbrain_bf_csv(path, name_to_id, standard_rows, native_rows):
             "standard_voxel_count", "standard_volume_mm3",
             "native_voxel_count", "native_volume_mm3",
         ])
-        for name in sorted(name_to_id, key=lambda n: name_to_id[n]):
+        # was sorted by label id, which puts every _L before its _R (VTA_L is 390,
+        # VTA_R is 423) -- pair order keeps a structure's two halves together
+        for name in region_grouping.order_by_region_pairs(list(name_to_id)):
             lid = name_to_id[name]
             _lid_s, cnt_s, vol_s = standard_rows[name]
             _lid_n, cnt_n, vol_n = native_rows[name]
@@ -733,9 +753,59 @@ def plot_thickness_myelin_summary(thickness_rows, myelin_rows, out_dir, subject_
     plt.close(fig)
 
 
+def save_hemisphere_measures(out_dir, thickness_rows, myelin_rows, volume_rows,
+                              name_to_id, standard_rows, native_rows):
+    """Left-only and right-only copies of every anatomical measure -- maps 1 and 2
+    of the same four-view scheme the FC pipeline uses:
+
+        1. <measure>_left      only left-hemisphere regions
+        2. <measure>_right     only right-hemisphere regions
+        3. <measure>           every region        (written by the caller already)
+        4. <measure>_combined  L/R pairs merged    (save_combined_measures)
+
+    Hemisphere comes from region_grouping.split_hemisphere(), so each measure is
+    split in its OWN naming convention -- Schaefer '7Networks_LH_...', wmparc
+    'Left-...'/'ctx-lh-...', HCPex '..._L'. Structures with no hemisphere
+    (Brain-Stem, CSF, 4th-Ventricle) appear in neither file, which is correct:
+    they belong only to the all-regions and combined views.
+
+    Returns the list of filenames written."""
+    def hemi_of(name):
+        return region_grouping.split_hemisphere(name)[1]
+
+    written = []
+    for side in ("L", "R"):
+        tag = "left" if side == "L" else "right"
+
+        for rows, header, filename in (
+            (thickness_rows, ["region", "thickness_mm"], f"cortical_thickness_schaefer400_{tag}.csv"),
+            (myelin_rows, ["region", "myelin_ratio"], f"myelin_schaefer400_{tag}.csv"),
+        ):
+            subset = [(n, v) for n, v in rows if hemi_of(n) == side]
+            if not subset:
+                continue
+            save_named_csv(out_dir / filename, header, subset)
+            written.append(filename)
+
+        vol_subset = [r for r in volume_rows if hemi_of(r[1]) == side]
+        if vol_subset:
+            fn = f"subcortical_volumes_wmparc_{tag}.csv"
+            save_volume_csv(out_dir / fn, vol_subset)
+            written.append(fn)
+
+        mb_subset = {n: i for n, i in name_to_id.items() if hemi_of(n) == side}
+        if mb_subset:
+            fn = f"midbrain_basalforebrain_volumes_hcpex_{tag}.csv"
+            save_midbrain_bf_csv(out_dir / fn, mb_subset, standard_rows, native_rows)
+            written.append(fn)
+
+    return written
+
+
 def save_combined_measures(out_dir, grouping_spec, subject_name, session_name,
                             thickness_rows, thickness_counts, myelin_rows, myelin_counts,
-                            volume_rows, name_to_id, standard_rows, native_rows):
+                            volume_rows, name_to_id, standard_rows, native_rows,
+                            tag="combined"):
     """Write a composite-region copy of every anatomical measure.
 
     Each measure is grouped in its OWN name space -- Schaefer parcels for
@@ -747,15 +817,20 @@ def save_combined_measures(out_dir, grouping_spec, subject_name, session_name,
     Aggregation follows what the number is: volumes and voxel counts SUM, while
     thickness and myelin take a vertex-count-weighted mean (see
     region_grouping's module docstring).
+
+    `tag` names the output files. It defaults to "combined", which is view 4 of
+    the fixed four (the built-in left/right rule). A caller passing some OTHER
+    grouping (--groups component, a custom JSON) must pass its own tag, or it
+    would write straight over that fixed view.
     """
     written, summaries = [], []
 
     # --- cortical scalars: weighted mean over vertices
     for key, rows, counts, header, filename in (
         ("cortical thickness", thickness_rows, thickness_counts, ["region", "thickness_mm"],
-         "cortical_thickness_schaefer400_combined.csv"),
+         f"cortical_thickness_schaefer400_{tag}.csv"),
         ("myelin", myelin_rows, myelin_counts, ["region", "myelin_ratio"],
-         "myelin_schaefer400_combined.csv"),
+         f"myelin_schaefer400_{tag}.csv"),
     ):
         names = [n for n, _v in rows]
         grouping = region_grouping.for_names(grouping_spec, names)
@@ -768,7 +843,7 @@ def save_combined_measures(out_dir, grouping_spec, subject_name, session_name,
             writer = csv.writer(f)
             writer.writerow(header + ["vertex_count", "n_parcels"])
             members = dict(grouping.resolve(names))
-            for name, value in combined:
+            for name, value in order_rows(combined):
                 writer.writerow([name, f"{value:.6f}", int(round(combined_counts.get(name, 0))),
                                  len(members.get(name, [name]))])
         written.append(path.name)
@@ -782,11 +857,11 @@ def save_combined_measures(out_dir, grouping_spec, subject_name, session_name,
         combined = region_grouping.combine_values(vol_pairs, grouping, rule="sum")
         combined_vox = region_grouping.combine_weights(vox_counts, grouping)
         members = dict(grouping.resolve([n for n, _v in vol_pairs]))
-        path = out_dir / "subcortical_volumes_wmparc_combined.csv"
+        path = out_dir / f"subcortical_volumes_wmparc_{tag}.csv"
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["region", "voxel_count", "volume_mm3", "n_parcels", "members"])
-            for name, value in combined:
+            for name, value in order_rows(combined):
                 parts = members.get(name, [name])
                 writer.writerow([name, int(round(combined_vox.get(name, 0))), f"{value:.3f}",
                                  len(parts), ";".join(parts)])
@@ -810,20 +885,21 @@ def save_combined_measures(out_dir, grouping_spec, subject_name, session_name,
         native_combined = dict(region_grouping.combine_values(native_pairs, grouping, rule="sum"))
         standard_combined = dict(region_grouping.combine_values(standard_pairs, grouping, rule="sum"))
         members = dict(grouping.resolve(mb_names))
-        path = out_dir / "midbrain_basalforebrain_volumes_hcpex_combined.csv"
+        path = out_dir / f"midbrain_basalforebrain_volumes_hcpex_{tag}.csv"
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["region", "standard_volume_mm3", "native_volume_mm3", "n_parcels", "members"])
-            for name, _members in grouping.resolve(mb_names):
+            for name in region_grouping.order_by_region_pairs(
+                    [n for n, _m in grouping.resolve(mb_names)]):
                 writer.writerow([name, f"{standard_combined[name]:.3f}", f"{native_combined[name]:.3f}",
                                  len(members.get(name, [name])), ";".join(members.get(name, [name]))])
         written.append(path.name)
         summaries.append(f"midbrain/basal forebrain: {len(mb_names)} labels -> {len(native_combined)} regions")
 
     if grouping:
-        (out_dir / "region_groups_anat_combined.json").write_text(
+        (out_dir / f"region_groups_anat_{tag}.json").write_text(
             json.dumps(grouping.to_dict(), indent=2) + "\n")
-        written.append("region_groups_anat_combined.json")
+        written.append(f"region_groups_anat_{tag}.json")
     return written, summaries
 
 
@@ -964,18 +1040,22 @@ def main():
         print(f"    (note: {n_zero} selected region(s) have zero volume — shown in the "
               f"linear figure, omitted from the log one)")
 
-    # Optional composite regions, written alongside the per-parcel output.
-    # Asked once and applied to all three name spaces (Schaefer, wmparc, HCPex).
-    grouping_spec = region_grouping.prompt_grouping([n for n, _v in thickness_rows])
-    combined_files = []
-    if grouping_spec:
-        combined_files, summaries = save_combined_measures(
-            out_dir, grouping_spec, subject.name, session.name,
-            thickness_rows, thickness_counts, myelin_rows, myelin_counts,
-            volume_rows, name_to_id, standard_rows, native_rows)
-        print("  Combined-region copies written:")
-        for line in summaries:
-            print(f"    {line}")
+    # Every measure is written as the same four views the FC pipeline uses:
+    # left only, right only, all regions (already written above), and L/R
+    # combined. No prompt -- these four are fixed. Applied across all three name
+    # spaces (Schaefer, wmparc, HCPex), each split in its own convention.
+    hemi_files = save_hemisphere_measures(
+        out_dir, thickness_rows, myelin_rows, volume_rows,
+        name_to_id, standard_rows, native_rows)
+    print(f"  Hemisphere copies written: {len(hemi_files)} file(s)")
+
+    combined_files, summaries = save_combined_measures(
+        out_dir, region_grouping.DEFAULT_SPEC, subject.name, session.name,
+        thickness_rows, thickness_counts, myelin_rows, myelin_counts,
+        volume_rows, name_to_id, standard_rows, native_rows)
+    print("  Combined-region copies written:")
+    for line in summaries:
+        print(f"    {line}")
 
     write_manifest(out_dir, subject.name, session.name, thickness_path, myelin_path,
                     wmparc_path, atlas_path, lut_path, voxel_vol_mm3,

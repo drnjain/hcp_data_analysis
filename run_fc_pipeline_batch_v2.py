@@ -106,8 +106,9 @@ def process_session(subject, session, analysed_root, hcpex_vol, hcpex_labels, st
     all_ts, all_names = fcp.load_or_extract_all_sources(ts_path, vol_bold, hcpex_vol, hcpex_labels)
     triangle_ts, triangle_names = fcp.build_triangle_ts(all_ts, all_names)
 
-    fcp.run_and_save_analysis(all_ts, all_names, standard_selection, out_dir, "standard_hcpex",
-                               subject.name, session.name, use_graph_plot=False)
+    fcp.run_standard_maps(all_ts, all_names, standard_selection, out_dir, "standard_hcpex",
+                          subject.name, session.name,
+                          extra_grouping=None if fcp.is_plain_lr(grouping) else grouping)
     fcp.run_and_save_analysis(all_ts, all_names, fcp.GRAPH_VTA, out_dir, "graph_vta_hcpex",
                                subject.name, session.name, use_graph_plot=True)
     fcp.run_and_save_analysis(all_ts, all_names, fcp.GRAPH_SN, out_dir, "graph_sn_hcpex",
@@ -117,9 +118,6 @@ def process_session(subject, session, analysed_root, hcpex_vol, hcpex_labels, st
     fcp.run_and_save_analysis(triangle_ts, triangle_names, fcp.TRIANGLE_SN, out_dir, "triangle_sn_hcpex",
                                subject.name, session.name, use_graph_plot=True)
 
-    if grouping:
-        fcp.run_grouped_analysis(all_ts, all_names, standard_selection, grouping, out_dir,
-                                  "standard_hcpex", subject.name, session.name)
 
     fcp.record_analysis(analysed_root, subject.name, session.name)
     return "done", None

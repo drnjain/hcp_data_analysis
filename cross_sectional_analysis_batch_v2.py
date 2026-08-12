@@ -42,6 +42,7 @@ import traceback
 from pathlib import Path
 
 import cross_sectional_analysis_v2 as csa
+import re
 import region_grouping
 
 
@@ -131,11 +132,24 @@ def process_session(subject, session, analysed_root, shared, force, grouping_spe
                         shared["hcpex_path"], paths["warp_field_path"], paths["ref_native_path"],
                         native_voxel_vol)
 
-    if grouping_spec:
+    csa.save_hemisphere_measures(
+        out_dir, thickness_rows, myelin_rows, volume_rows,
+        shared["name_to_id"], shared["standard_rows"], native_rows)
+    csa.save_combined_measures(
+        out_dir, region_grouping.DEFAULT_SPEC, subject.name, session.name,
+        thickness_rows, thickness_counts, myelin_rows, myelin_counts,
+        volume_rows, shared["name_to_id"], shared["standard_rows"], native_rows)
+
+    # --groups adds a FURTHER grouping beside the four fixed views. Given its own
+    # tag so it cannot overwrite the left/right-combined view above.
+    if grouping_spec is not None and not region_grouping.is_plain_lr(
+            region_grouping.for_names(grouping_spec, [n for n, _v in thickness_rows])):
+        tag = re.sub(r"\W+", "_", str(grouping_spec))[:24].strip("_") or "custom"
         csa.save_combined_measures(
             out_dir, grouping_spec, subject.name, session.name,
             thickness_rows, thickness_counts, myelin_rows, myelin_counts,
-            volume_rows, shared["name_to_id"], shared["standard_rows"], native_rows)
+            volume_rows, shared["name_to_id"], shared["standard_rows"], native_rows,
+            tag=f"{tag}_combined")
 
     csa.record_analysis(analysed_root, subject.name, session.name)
     return "done", None

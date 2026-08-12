@@ -64,6 +64,7 @@ import traceback
 from pathlib import Path
 
 import cross_sectional_analysis_v2 as csa
+import re
 import region_grouping
 import run_fc_pipeline_v2 as fcp
 
@@ -168,11 +169,24 @@ def run_anat(subject, session, analysed_root, anat_paths, shared, grouping=None)
                         shared["hcpex_path"], anat_paths["warp_field_path"], anat_paths["ref_native_path"],
                         native_voxel_vol)
 
-    if grouping:
+    csa.save_hemisphere_measures(
+        anat_out_dir, thickness_rows, myelin_rows, volume_rows,
+        shared["name_to_id"], shared["standard_rows"], native_rows)
+    csa.save_combined_measures(
+        anat_out_dir, region_grouping.DEFAULT_SPEC, subject.name, session.name,
+        thickness_rows, thickness_counts, myelin_rows, myelin_counts,
+        volume_rows, shared["name_to_id"], shared["standard_rows"], native_rows)
+
+    # --groups adds a FURTHER grouping beside the four fixed views. Given its own
+    # tag so it cannot overwrite the left/right-combined view above.
+    if grouping is not None and not region_grouping.is_plain_lr(
+            region_grouping.for_names(grouping, [n for n, _v in thickness_rows])):
+        tag = re.sub(r"\W+", "_", str(grouping))[:24].strip("_") or "custom"
         csa.save_combined_measures(
             anat_out_dir, grouping, subject.name, session.name,
             thickness_rows, thickness_counts, myelin_rows, myelin_counts,
-            volume_rows, shared["name_to_id"], shared["standard_rows"], native_rows)
+            volume_rows, shared["name_to_id"], shared["standard_rows"], native_rows,
+            tag=f"{tag}_combined")
 
     csa.record_analysis(analysed_root, subject.name, session.name)
 
@@ -187,8 +201,9 @@ def run_func(subject, session, analysed_root, vol_bold, shared, standard_selecti
         ts_path, vol_bold, shared["hcpex_path"], shared["hcpex_lut_path"])
     triangle_ts, triangle_names = fcp.build_triangle_ts(all_ts, all_names)
 
-    fcp.run_and_save_analysis(all_ts, all_names, standard_selection, func_out_dir, "standard_hcpex",
-                               subject.name, session.name, use_graph_plot=False)
+    fcp.run_standard_maps(all_ts, all_names, standard_selection, func_out_dir, "standard_hcpex",
+                          subject.name, session.name,
+                          extra_grouping=None if region_grouping.is_plain_lr(grouping) else grouping)
     fcp.run_and_save_analysis(all_ts, all_names, fcp.GRAPH_VTA, func_out_dir, "graph_vta_hcpex",
                                subject.name, session.name, use_graph_plot=True)
     fcp.run_and_save_analysis(all_ts, all_names, fcp.GRAPH_SN, func_out_dir, "graph_sn_hcpex",
@@ -197,10 +212,6 @@ def run_func(subject, session, analysed_root, vol_bold, shared, standard_selecti
                                subject.name, session.name, use_graph_plot=True)
     fcp.run_and_save_analysis(triangle_ts, triangle_names, fcp.TRIANGLE_SN, func_out_dir, "triangle_sn_hcpex",
                                subject.name, session.name, use_graph_plot=True)
-
-    if grouping:
-        fcp.run_grouped_analysis(all_ts, all_names, standard_selection, grouping, func_out_dir,
-                                  "standard_hcpex", subject.name, session.name)
 
     fcp.record_analysis(analysed_root, subject.name, session.name)
 

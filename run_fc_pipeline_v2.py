@@ -98,14 +98,17 @@ VOL_BOLD_REL = "func/MNINonLinear/Results/rfMRI_REST/rfMRI_REST_hp0_clean_rclean
 # used only if the raw data root itself has no atlases/ subfolder
 FALLBACK_ATLASES = Path("/Volumes/njainmpi/Project3_Aging/Raw_Data/atlases")
 
+# Every parcel in this pipeline comes from ONE atlas (HCPex), so the picker shows
+# ONE group. It used to be split A = cortex / B = extension, which wrongly implied
+# two sources -- that split belongs to v1, where A/B/C/D really were four different
+# atlases. Because HCPex's labels run 1..426 contiguously, a single group makes the
+# picker label equal the HCPex label number: A388 IS label 388.
 ATLAS_GROUPS = {
-    "A": "HCP-MMP1.0 cortex (360 regions)",
-    "B": "HCPex subcortical/midbrain/basal-forebrain extension (66 regions)",
+    "A": "HCPex — HCP-MMP1.0 cortex + subcortical/midbrain/basal-forebrain extension",
 }
 
 CARD_COLORS = {  # purely cosmetic per-group accent, unrelated to the analysis-count gradient
     "A": (90, 160, 250),
-    "B": (190, 130, 250),
 }
 
 # Analysis 2/3: fixed node sets for the graph plots, left/right kept separate
@@ -141,12 +144,25 @@ TRIANGLE_SN = ["NbM", "SN", "Hippocampus"]
 MAX_GRAPH_NODES = 12
 
 
-def classify(name):
-    """Return the (group_letter, atlas_label) a parcel name belongs to, based
-    on the base name with the trailing '_L'/'_R' hemisphere suffix stripped."""
+def parcel_block(name):
+    """Which half of HCPex a parcel comes from — Glasser's HCP-MMP1.0 cortex, or
+    the subcortical/midbrain/basal-forebrain extension. This is provenance only:
+    both halves live in the same label volume and are extracted identically, so
+    it does NOT split the picker. Recorded in region_names_<suffix>.txt.
+
+    Note hippocampus (labels 80/260) reports as cortex — Glasser counts it as
+    allocortex, so it sits inside the 1..360 block despite being subcortical."""
     base = name[:-2] if name.endswith(("_L", "_R")) else name
     if base in SUBCORTICAL_BASE_NAMES:
-        return "B", ATLAS_GROUPS["B"]
+        return "HCPex subcortical/midbrain/basal-forebrain extension (66 regions)"
+    return "HCP-MMP1.0 cortex (360 regions)"
+
+
+def classify(name):
+    """Return the (group_letter, atlas_label) a parcel name belongs to. One atlas,
+    one group — see ATLAS_GROUPS. Kept as a function (rather than inlined) because
+    webapp_studio/discovery.py builds its own parcel picker from it, so the browser
+    app and the terminal picker cannot disagree about the grouping."""
     return "A", ATLAS_GROUPS["A"]
 
 
@@ -310,6 +326,23 @@ def find_atlases_dir(raw_root):
     )
 
 
+def assert_labels_contiguous(idx_to_name):
+    """The parcel picker labels parcels by their position in sorted label order
+    and calls that the HCPex label number. That equivalence only holds while the
+    LookUpTable's indices are 1..N with no gaps. Checked explicitly, because a
+    gapped LUT would not error -- it would quietly shift every number the user
+    types onto the wrong parcel."""
+    idx = sorted(idx_to_name)
+    if idx != list(range(1, len(idx) + 1)):
+        missing = sorted(set(range(1, max(idx) + 1)) - set(idx))[:8]
+        raise RuntimeError(
+            f"HCPex label indices are not contiguous 1..{max(idx)} "
+            f"(missing e.g. {missing}). The picker's numbers would no longer "
+            "match HCPex label numbers -- fix the LookUpTable or change "
+            "_group_labeled_entries() to carry real label indices."
+        )
+
+
 def load_hcpex_labels(labels_txt):
     """idx -> name (e.g. 'Hippocampus_L', 'Substantia_nigra_pars_compacta_R'),
     from HCPex's LookUpTable.txt -- a FreeSurfer/ITK-SNAP-style color LUT:
@@ -326,6 +359,7 @@ def load_hcpex_labels(labels_txt):
         if idx == 0:
             continue  # background/Unknown, not a real parcel
         labels[idx] = parts[1]
+    assert_labels_contiguous(labels)
     return labels
 
 
@@ -435,15 +469,21 @@ def _ljust_fit(text, width):
 
 
 def _group_labeled_entries(all_names):
-    """Group parcels by atlas letter, in original relative order, and give each
-    a within-group label (A1, A2, ..., B1, ...). Returns
-    {letter: [(label, original_index, name), ...]}."""
+    """Label every parcel with its plain HCPex label number ('80', '260', ...).
+    Returns {letter: [(label, original_index, name), ...]} -- the dict is kept
+    (single key 'A') so the card renderer and the app's picker keep one shape.
+
+    The label is the parcel's 1-based position in `all_names`, which callers
+    build from sorted(idx_to_name), so position k IS HCPex label k. That holds
+    because HCPex's LookUpTable indices run 1..426 with no gaps -- asserted
+    below rather than assumed, since a gapped LUT would silently shift every
+    number the user types away from the atlas label it names."""
     groups = {letter: [] for letter in ATLAS_GROUPS}
     for i, name in enumerate(all_names):
         letter, _ = classify(name)
         groups[letter].append((i, name))
     return {
-        letter: [(f"{letter}{k}", idx, name) for k, (idx, name) in enumerate(items, 1)]
+        letter: [(str(k), idx, name) for k, (idx, name) in enumerate(items, 1)]
         for letter, items in groups.items()
     }
 
@@ -461,7 +501,7 @@ def _print_atlas_card(letter, entries, term_width):
     rgb = CARD_COLORS[letter]
     border_w = max(20, term_width - 2)
 
-    title = f"{letter}: {ATLAS_GROUPS[letter]} — {len(entries)} parcels"
+    title = f"{ATLAS_GROUPS[letter]} — {len(entries)} parcels"
     label_w = max(len(lbl) for lbl, _, _ in entries)
     row_strs = [f"{lbl:<{label_w}} {display_name(name)}" for lbl, _, name in entries]
     entry_w = max(len(s) for s in row_strs)
@@ -481,10 +521,14 @@ def _print_atlas_card(letter, entries, term_width):
 
 
 def _parse_card_selection(choice, label_to_entry, labeled):
-    """Parse 'all' / a bare group letter / label(s) / label range(s), e.g.
-    'A1, B2, B4', 'B', 'A1-10', or 'all'. Returns selected labels in the
-    order typed (ranges/groups expand in ascending order), duplicates
-    removed by first occurrence -- or None if unparseable."""
+    """Parse 'all' / HCPex label number(s) / number range(s), e.g.
+    '80, 260, 388', '1-10', or 'all'. Returns selected labels in the order
+    typed (ranges expand in ascending order), duplicates removed by first
+    occurrence -- or None if unparseable.
+
+    Numbers are HCPex label numbers, entered bare: 80 is Hippocampus_L. The
+    old letter-prefixed form ('A80') is deliberately NOT accepted -- silently
+    honouring it would leave two syntaxes in circulation for the same thing."""
     if choice.strip().lower() == "all":
         return [lbl for letter in labeled for (lbl, _, _) in labeled[letter]]
 
@@ -492,22 +536,17 @@ def _parse_card_selection(choice, label_to_entry, labeled):
     if not tokens:
         return None
 
-    letters = "".join(labeled)  # e.g. "AB" -- derived from ATLAS_GROUPS, never hardcoded
     selected, seen = [], set()
     for tok in tokens:
-        m = re.match(rf"^([{letters}{letters.lower()}])(\d+)?(?:-(\d+))?$", tok)
+        m = re.match(r"^(\d+)(?:\s*-\s*(\d+))?$", tok)
         if not m:
             return None
-        letter = m.group(1).upper()
-        if m.group(2) is None:
-            labels = [lbl for (lbl, _, _) in labeled[letter]]
-        else:
-            lo = int(m.group(2))
-            hi = int(m.group(3)) if m.group(3) else lo
-            if lo > hi:
-                return None
-            labels = [f"{letter}{k}" for k in range(lo, hi + 1)]
-        for lbl in labels:
+        lo = int(m.group(1))
+        hi = int(m.group(2)) if m.group(2) else lo
+        if lo > hi:
+            return None
+        for k in range(lo, hi + 1):
+            lbl = str(k)
             if lbl not in label_to_entry:
                 return None
             if lbl not in seen:
@@ -517,21 +556,20 @@ def _parse_card_selection(choice, label_to_entry, labeled):
 
 
 def choose_parcels(all_names):
-    """Show each atlas group as its own card (label + name per parcel) and let
-    the user pick specific parcels across groups by label, e.g. 'A1, B2'.
+    """Show the atlas as one card (HCPex label number + name per parcel) and let
+    the user pick parcels by those numbers, e.g. '80, 260'.
     Returns the chosen names, in the order the user selected them."""
     labeled = _group_labeled_entries(all_names)
     label_to_entry = {lbl: (idx, name) for items in labeled.values() for (lbl, idx, name) in items}
     term_width = shutil.get_terminal_size(fallback=(100, 24)).columns
 
-    print(f"\nAtlas groups available ({len(all_names)} parcels total):")
+    print(f"\nHCPex parcels available ({len(all_names)} total) — label number = HCPex label number:")
     for letter in ATLAS_GROUPS:
         _print_atlas_card(letter, labeled[letter], term_width)
 
     print(
-        "Select parcels by label, comma-separated (e.g. 'A1, B2, B4'). "
-        "A bare group letter selects the whole group (e.g. 'B'), a range works "
-        "within a group (e.g. 'A1-10'), or type 'all' for every parcel:"
+        "Select parcels by HCPex label number, comma-separated (e.g. '80, 260, 388'). "
+        "A range works too (e.g. '1-10'), or type 'all' for every parcel:"
     )
     while True:
         choice = prompt("Selection: ")
@@ -708,7 +746,7 @@ def run_and_save_analysis(all_ts, all_names, selected_names, out_dir, suffix,
     save_matrix_csv(out_dir / f"fc_matrix_corr_{suffix}.csv", corr, selected_names)
     save_matrix_csv(out_dir / f"fc_matrix_fisherz_{suffix}.csv", fisher_z, selected_names)
     (out_dir / f"region_names_{suffix}.txt").write_text(
-        "\n".join(f"{n}\t{classify(n)[1]}" for n in selected_names)
+        "\n".join(f"{n}\t{parcel_block(n)}" for n in selected_names)
     )
 
     plot_title = f"{subject_name} / {session_name} — Functional Connectivity, {suffix} ({len(selected_names)} parcels)"
@@ -719,6 +757,82 @@ def run_and_save_analysis(all_ts, all_names, selected_names, out_dir, suffix,
 
     print(f"  [{suffix}] {len(selected_names)} parcels -> fc_matrix_corr_{suffix}.csv, "
           f"fc_matrix_fisherz_{suffix}.csv, fc_matrix_{suffix}.png/.svg, region_names_{suffix}.txt")
+
+
+def split_hemispheres(selected_names):
+    """(left, right) sublists of a selection, preserving the order chosen.
+
+    Uses region_grouping.split_hemisphere() rather than a '_L'/'_R' suffix test,
+    so the same function works for every atlas in this project -- HCPex
+    ('Hippocampus_L'), Schaefer-400 ('7Networks_LH_Vis_1') and wmparc
+    ('Left-Hippocampus', 'ctx-lh-superiorfrontal'). Unlateralised structures
+    (Brain-Stem, CSF) report no hemisphere and appear in neither list, which is
+    correct: they belong only to the both-hemispheres and combined views."""
+    left = [n for n in selected_names if region_grouping.split_hemisphere(n)[1] == "L"]
+    right = [n for n in selected_names if region_grouping.split_hemisphere(n)[1] == "R"]
+    return left, right
+
+
+def order_by_region_pairs(selected_names):
+    """Thin alias -- implementation lives in region_grouping so the anatomical
+    scripts can use the same ordering without importing this FC module."""
+    return region_grouping.order_by_region_pairs(selected_names)
+
+
+def run_standard_maps(all_ts, all_names, selected_names, out_dir, suffix,
+                      subject_name, session_name, extra_grouping=None):
+    """The four views of the standard FC matrix, whatever N parcels were picked:
+
+        1. <suffix>_left      only the _L parcels of the selection
+        2. <suffix>_right     only the _R parcels
+        3. <suffix>           every selected parcel, L and R side by side
+        4. <suffix>_combined  each L/R pair merged into one region
+
+    Map 3 keeps the bare <suffix> filename it has always had, so existing
+    outputs, skip-if-done checks and the browser app keep working unchanged.
+
+    Map 4 is produced ALWAYS, from the built-in 'lr' rule -- it is one of the
+    four, not an optional extra. `extra_grouping` is for a non-lr grouping the
+    user asked for separately (component, a custom JSON); it is written under
+    its own suffix so it cannot overwrite map 4.
+
+    Maps 1/2/4 need at least 2 regions to correlate; a map that cannot reach
+    that is skipped with a printed reason rather than raising.
+
+    Every map is laid out by order_by_region_pairs(), so map 3 shows each
+    region's left and right adjacent (Hippocampus_L, Hippocampus_R, SNc_L, ...)
+    instead of all lefts then all rights, and maps 1/2/4 follow the same region
+    order so the four can be read side by side."""
+    selected_names = order_by_region_pairs(selected_names)
+    left, right = split_hemispheres(selected_names)
+
+    for label, names in (("left", left), ("right", right)):
+        if len(names) < 2:
+            print(f"  [{suffix}_{label}] {len(names)} parcel(s) in this hemisphere "
+                  f"-- need 2 to correlate, skipped")
+            continue
+        run_and_save_analysis(all_ts, all_names, names, out_dir, f"{suffix}_{label}",
+                              subject_name, session_name, use_graph_plot=False)
+
+    run_and_save_analysis(all_ts, all_names, selected_names, out_dir, suffix,
+                          subject_name, session_name, use_graph_plot=False)
+
+    run_grouped_analysis(all_ts, all_names, selected_names, region_grouping.DEFAULT_SPEC,
+                         out_dir, suffix, subject_name, session_name)
+
+    # A grouping other than plain left/right, if one was requested. Given its own
+    # suffix because run_grouped_analysis() always appends "_combined", so reusing
+    # `suffix` here would write straight over map 4.
+    if extra_grouping is not None:
+        tag = re.sub(r"\W+", "_", str(getattr(extra_grouping, "source", "custom"))).strip("_")[:24]
+        run_grouped_analysis(all_ts, all_names, selected_names, extra_grouping,
+                             out_dir, f"{suffix}_{tag or 'custom'}", subject_name, session_name)
+
+
+def is_plain_lr(grouping):
+    """Thin alias -- the implementation lives in region_grouping, so the batch
+    drivers can use it without importing this FC module."""
+    return region_grouping.is_plain_lr(grouping)
 
 
 def main():
@@ -763,16 +877,16 @@ def main():
     print("\n== Standard FC matrix -- pick parcels ==")
     standard_selection = choose_parcels(all_names)
 
-    # Optional: treat groups of the selected parcels as single regions. The four
-    # fixed graph/triangle analyses keep their own node sets -- the triangle
-    # ones already combine L/R by construction.
-    grouping = region_grouping.prompt_grouping(standard_selection)
+    # No grouping prompt: the standard matrix is always written as the same four
+    # maps (left / right / both / L+R combined), so there is nothing left to ask.
+    # The non-interactive --groups flag still exists on the batch drivers for an
+    # ADDITIONAL grouping (component, custom JSON) on top of those four.
 
     triangle_ts, triangle_names = build_triangle_ts(all_ts, all_names)
 
     print(f"\n== Computing all five analyses for {subject.name}/{session.name} ==")
-    run_and_save_analysis(all_ts, all_names, standard_selection, out_dir, "standard_hcpex",
-                           subject.name, session.name, use_graph_plot=False)
+    run_standard_maps(all_ts, all_names, standard_selection, out_dir, "standard_hcpex",
+                      subject.name, session.name)
     run_and_save_analysis(all_ts, all_names, GRAPH_VTA, out_dir, "graph_vta_hcpex",
                            subject.name, session.name, use_graph_plot=True)
     run_and_save_analysis(all_ts, all_names, GRAPH_SN, out_dir, "graph_sn_hcpex",
@@ -781,10 +895,6 @@ def main():
                            subject.name, session.name, use_graph_plot=True)
     run_and_save_analysis(triangle_ts, triangle_names, TRIANGLE_SN, out_dir, "triangle_sn_hcpex",
                            subject.name, session.name, use_graph_plot=True)
-
-    if grouping:
-        run_grouped_analysis(all_ts, all_names, standard_selection, grouping, out_dir,
-                             "standard_hcpex", subject.name, session.name)
 
     record_analysis(analysed_root, subject.name, session.name)
 
