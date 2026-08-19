@@ -45,8 +45,9 @@ regions wmparc has no label for at all.
 Standard command:
   python3 cross_sectional_analysis_v2.py
 
-Output:
-  Analysed_data/<subject>/<session>/anat/
+Output (under the chosen results root -- see project_paths.py; it defaults to
+a sibling Analysed_data/ next to the raw data root, as before):
+  <results root>/<subject>/<session>/anat/
     cortical_thickness_schaefer400.csv   (region, thickness_mm)
     myelin_schaefer400.csv               (region, myelin_ratio)
     subcortical_volumes_wmparc.csv       (label_id, region, voxel_count, volume_mm3)
@@ -75,12 +76,12 @@ the HCPex numbers used are the warped native ones, never the standard-space
 ones. This step is interactive and lives only in main(), so the batch drivers
 (cross_sectional_analysis_batch_v2.py, combined_analysis_batch_v2.py) are
 unaffected and still write the three standard figures only.
-  Own run-count log: Analysed_data/analysis_log_anat_v2.json (separate from
+  Own run-count log: <results root>/analysis_log_anat_v2.json (separate from
   v1's analysis_log_anat.json and the FC pipeline's logs).
 
 Requires:
   Everything cross_sectional_analysis_v1.py requires, plus HCPex_2mm.nii +
-  HCPex_LookUpTable.txt under <raw root>/atlases/ (already present from
+  HCPex_LookUpTable.txt in the chosen atlases folder (already present from
   run_fc_pipeline_v2.py), and FSL's applywarp on PATH (checked via
   shutil.which -- confirmed present at /Users/jain/fsl/share/fsl/bin/applywarp
   on this machine).
@@ -105,6 +106,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import nibabel as nib
 
+import project_paths
 import region_grouping
 import readline
 
@@ -389,25 +391,28 @@ def choose_regions(pool):
 
 
 def find_data_root():
-    enable_path_completion()
-    try:
-        while True:
-            raw = Path(prompt("Path to raw data root (contains sub-*/ses-*/..., Tab to autocomplete): ")).expanduser()
-            if raw.is_dir():
-                return raw
-            print(f"  '{raw}' is not a directory, try again.")
-    finally:
-        disable_completion()
+    """Kept for callers that want the raw root alone. The three paths are now
+    resolved together by project_paths.resolve() -- this just reads back what
+    that saved, and falls back to asking if nothing is saved yet."""
+    saved = project_paths.get_path("raw_root")
+    if saved and saved.is_dir():
+        return saved
+    raw_root, _, _ = project_paths.resolve(project_paths.ANAT_ATLAS_FILES)
+    return raw_root
 
 
 def find_atlases_dir(raw_root):
-    candidate = raw_root / "atlases"
-    required = ["schaefer400_tianS1.dlabel.nii", "HCPex_2mm.nii", "HCPex_LookUpTable.txt"]
-    if all((candidate / f).exists() for f in required):
-        return candidate
-    if all((FALLBACK_ATLASES / f).exists() for f in required):
-        print(f"  (no atlases/ folder under {raw_root} — using {FALLBACK_ATLASES})")
-        return FALLBACK_ATLASES
+    """The saved atlases folder, else the historical `<raw root>/atlases` ->
+    network-fallback order. Retained because webapp_studio imports it directly.
+    Requires all three files -- this pipeline needs Schaefer as well as HCPex."""
+    saved = project_paths.get_path("atlases_dir")
+    if saved and project_paths._has_atlas_files(saved, project_paths.ANAT_ATLAS_FILES):
+        return saved
+    derived = project_paths.default_atlases_dir(raw_root, project_paths.ANAT_ATLAS_FILES)
+    if derived:
+        if derived != raw_root / "atlases":
+            print(f"  (no atlases/ folder under {raw_root} — using {derived})")
+        return derived
     sys.exit(
         "Could not locate schaefer400_tianS1.dlabel.nii / HCPex_2mm.nii / "
         "HCPex_LookUpTable.txt under either the data root or the fallback "
@@ -940,8 +945,10 @@ def write_manifest(out_dir, subject_name, session_name, thickness_path, myelin_p
 
 
 def main():
-    raw_root = find_data_root()
-    analysed_root = raw_root.parent / "Analysed_data"
+    # All three folders at once -- asked on the first run, confirmed on later
+    # ones, saved to aabc_paths.json either way. The results root defaults to
+    # the historical <raw root>/../Analysed_data but is no longer forced to it.
+    raw_root, analysed_root, atlases_dir = project_paths.resolve(project_paths.ANAT_ATLAS_FILES)
     analysis_log = load_analysis_log(analysed_root)
 
     subjects = sorted(p for p in raw_root.glob("sub-*") if p.is_dir())
@@ -985,7 +992,6 @@ def main():
     thickness_path = thickness_matches[0]
     myelin_path = myelin_matches[0]
 
-    atlases_dir = find_atlases_dir(raw_root)
     atlas_path = atlases_dir / "schaefer400_tianS1.dlabel.nii"
     hcpex_path = atlases_dir / "HCPex_2mm.nii"
     hcpex_lut_path = atlases_dir / "HCPex_LookUpTable.txt"

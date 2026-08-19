@@ -49,6 +49,7 @@ import sys
 import traceback
 from pathlib import Path
 
+import project_paths
 import region_grouping
 import run_fc_pipeline_v2 as fcp
 
@@ -128,6 +129,8 @@ def main():
     ap.add_argument("raw_root", nargs="?", help="path to raw data root (contains sub-*/ses-*/...)")
     ap.add_argument("--force", action="store_true", help="re-run sessions that already have a standard FC matrix")
     ap.add_argument("--subjects", help="comma-separated subject folder names to restrict to")
+    ap.add_argument("--analysed-root", help="where results are written (default: saved path, else <raw root>/../Analysed_data)")
+    ap.add_argument("--atlases-dir", help="folder holding the shared atlas files (default: saved path, else <raw root>/atlases)")
     ap.add_argument("--parcels", default=None,
                      help="parcel selection for the 'standard' FC matrix (default: prompt interactively)")
     ap.add_argument("--groups", default=region_grouping.DEFAULT_SPEC,
@@ -143,17 +146,15 @@ def main():
     except ValueError as exc:
         sys.exit(f"--groups: {exc}")
 
-    raw_root = Path(args.raw_root).expanduser() if args.raw_root else fcp.find_data_root()
-    if not raw_root.is_dir():
-        sys.exit(f"'{raw_root}' is not a directory")
+    raw_root, analysed_root, atlases_dir = project_paths.resolve(
+        project_paths.FC_ATLAS_FILES, raw_root=args.raw_root,
+        analysed_root=args.analysed_root, atlases_dir=args.atlases_dir)
     subject_filter = set(s.strip() for s in args.subjects.split(",")) if args.subjects else None
 
-    analysed_root = raw_root.parent / "Analysed_data"
     pairs = find_sessions(raw_root, subject_filter)
     if not pairs:
         sys.exit(f"No sub-*/ses-* sessions found under {raw_root}")
 
-    atlases_dir = fcp.find_atlases_dir(raw_root)
     hcpex_vol = atlases_dir / "HCPex_2mm.nii"
     hcpex_labels = atlases_dir / "HCPex_LookUpTable.txt"
 

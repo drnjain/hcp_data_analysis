@@ -3,7 +3,8 @@
 Interactive functional connectivity pipeline (v3 -- HCPex-only).
 
 Prompts for:
-  - path to the raw data root (contains sub-*/ses-*/... HCP-processed sessions)
+  - the raw data root, results root and atlases folder (project_paths.py) --
+    asked in full the first time, then shown for confirmation on later runs
   - which subject to run, from those found under that root
   - which session, if the subject has more than one
   - which parcels to include in the "standard" FC matrix, out of all 426
@@ -19,7 +20,7 @@ Every run always computes five analyses for the chosen session, same as v2:
   - "triangle_sn"  -- same idea for SN: SNpc+SNpr averaged into one "SN" node,
                        NbM and Hippocampus averaged the same way as above,
                        giving a plain 3-node triangle (NbM, SN, Hippocampus)
-All five are saved into Analysed_data/<subject>/<session>/func/, suffixed with
+All five are saved into <results root>/<subject>/<session>/func/, suffixed with
 "_hcpex" (e.g. fc_matrix_corr_standard_hcpex.csv) -- mirroring the anat/
 subfolder cross_sectional_analysis_v2.py uses for its own outputs.
 
@@ -38,12 +39,13 @@ this atlas -- NOT the CIFTI dtseries + MSMAll surface registration v1/v2 use
 for cortex. One atlas, one file, one extraction method; the tradeoff is
 losing MSMAll's surface-registration precision for the cortical parcels.
 
-Results are written to a sibling "Analysed_data" tree next to the raw data
-root, mirroring its sub-<subject>/ses-<session>/ layout, under a "func"
-subfolder. The raw data tree itself is never written to.
+Results are written under the chosen results root, mirroring the raw tree's
+sub-<subject>/ses-<session>/ layout, in a "func" subfolder. That root defaults
+to a sibling "Analysed_data" next to the raw data root -- the historical rule --
+but can be anywhere; see project_paths.py. The raw data tree is never written to.
 
 The full 426-parcel timeseries extraction runs once per session and is
-cached at the subject level as Analysed_data/<subject>/timeseries_hcpex_<ses
+cached at the subject level as <results root>/<subject>/timeseries_hcpex_<ses
 sion>.csv (separate from v2's timeseries_<session>.csv cache, since the
 parcel sets are entirely different). Delete that file to force a fresh
 extraction (e.g. after updating the atlas file).
@@ -67,6 +69,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import nibabel as nib
 
+import project_paths
 import region_grouping
 import readline
 
@@ -302,24 +305,27 @@ def choose_tile(items, counts, label, formatter=str):
 
 
 def find_data_root():
-    enable_path_completion()
-    try:
-        while True:
-            raw = Path(prompt("Path to raw data root (contains sub-*/ses-*/..., Tab to autocomplete): ")).expanduser()
-            if raw.is_dir():
-                return raw
-            print(f"  '{raw}' is not a directory, try again.")
-    finally:
-        disable_completion()
+    """Kept for callers that want the raw root alone. The three paths are now
+    resolved together by project_paths.resolve() -- this just reads back what
+    that saved, and falls back to asking if nothing is saved yet."""
+    saved = project_paths.get_path("raw_root")
+    if saved and saved.is_dir():
+        return saved
+    raw_root, _, _ = project_paths.resolve(project_paths.FC_ATLAS_FILES)
+    return raw_root
 
 
 def find_atlases_dir(raw_root):
-    candidate = raw_root / "atlases"
-    if (candidate / "HCPex_2mm.nii").exists() and (candidate / "HCPex_LookUpTable.txt").exists():
-        return candidate
-    if (FALLBACK_ATLASES / "HCPex_2mm.nii").exists() and (FALLBACK_ATLASES / "HCPex_LookUpTable.txt").exists():
-        print(f"  (no atlases/ folder under {raw_root} — using {FALLBACK_ATLASES})")
-        return FALLBACK_ATLASES
+    """The saved atlases folder, else the historical `<raw root>/atlases` ->
+    network-fallback order. Retained because webapp_studio imports it directly."""
+    saved = project_paths.get_path("atlases_dir")
+    if saved and project_paths._has_atlas_files(saved, project_paths.FC_ATLAS_FILES):
+        return saved
+    derived = project_paths.default_atlases_dir(raw_root, project_paths.FC_ATLAS_FILES)
+    if derived:
+        if derived != raw_root / "atlases":
+            print(f"  (no atlases/ folder under {raw_root} — using {derived})")
+        return derived
     sys.exit(
         "Could not locate HCPex atlas files (HCPex_2mm.nii, HCPex_LookUpTable.txt) "
         "under either the data root or the fallback location."
@@ -836,9 +842,10 @@ def is_plain_lr(grouping):
 
 
 def main():
-    raw_root = find_data_root()
-    # Analysed_data mirrors sub-*/ses-*/ next to (not inside) the raw data root
-    analysed_root = raw_root.parent / "Analysed_data"
+    # All three folders at once -- asked on the first run, confirmed on later
+    # ones, saved to aabc_paths.json either way. The results root defaults to
+    # the historical <raw root>/../Analysed_data but is no longer forced to it.
+    raw_root, analysed_root, atlases_dir = project_paths.resolve(project_paths.FC_ATLAS_FILES)
     analysis_log = load_analysis_log(analysed_root)
 
     subjects = sorted(p for p in raw_root.glob("sub-*") if p.is_dir())
@@ -861,7 +868,6 @@ def main():
     if not vol_bold.exists():
         sys.exit(f"Missing expected resting-state output under {session}\n  need: {VOL_BOLD_REL}")
 
-    atlases_dir = find_atlases_dir(raw_root)
     hcpex_vol = atlases_dir / "HCPex_2mm.nii"
     hcpex_labels = atlases_dir / "HCPex_LookUpTable.txt"
 

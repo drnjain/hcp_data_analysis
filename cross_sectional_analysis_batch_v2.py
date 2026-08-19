@@ -43,6 +43,7 @@ from pathlib import Path
 
 import cross_sectional_analysis_v2 as csa
 import re
+import project_paths
 import region_grouping
 
 
@@ -160,6 +161,8 @@ def main():
     ap.add_argument("raw_root", nargs="?", help="path to raw data root (contains sub-*/ses-*/...)")
     ap.add_argument("--force", action="store_true", help="re-run sessions that already have anat/manifest.txt")
     ap.add_argument("--subjects", help="comma-separated subject folder names to restrict to")
+    ap.add_argument("--analysed-root", help="where results are written (default: saved path, else <raw root>/../Analysed_data)")
+    ap.add_argument("--atlases-dir", help="folder holding the shared atlas files (default: saved path, else <raw root>/atlases)")
     ap.add_argument("--groups", default=region_grouping.DEFAULT_SPEC,
                      help="ALSO write composite-region copies of every measure beside the per-parcel output (*_combined.csv, default: lr; 'none' to skip): "
                           + region_grouping.BUILTIN_HELP)
@@ -172,18 +175,15 @@ def main():
     except ValueError as exc:
         sys.exit(f"--groups: {exc}")
 
-    raw_root = Path(args.raw_root).expanduser() if args.raw_root else csa.find_data_root()
-    if not raw_root.is_dir():
-        sys.exit(f"'{raw_root}' is not a directory")
+    raw_root, analysed_root, atlases_dir = project_paths.resolve(
+        project_paths.ANAT_ATLAS_FILES, raw_root=args.raw_root,
+        analysed_root=args.analysed_root, atlases_dir=args.atlases_dir)
     subject_filter = set(s.strip() for s in args.subjects.split(",")) if args.subjects else None
 
-
-    analysed_root = raw_root.parent / "Analysed_data"
     pairs = find_sessions(raw_root, subject_filter)
     if not pairs:
         sys.exit(f"No sub-*/ses-* sessions found under {raw_root}")
 
-    atlases_dir = csa.find_atlases_dir(raw_root)
     atlas_path = atlases_dir / "schaefer400_tianS1.dlabel.nii"
     hcpex_path = atlases_dir / "HCPex_2mm.nii"
     hcpex_lut_path = atlases_dir / "HCPex_LookUpTable.txt"

@@ -66,6 +66,7 @@ from datetime import datetime
 from pathlib import Path
 
 import cross_sectional_analysis_v2 as csa
+import project_paths
 import region_grouping
 import organize_hcp_data as ohd
 import run_fc_pipeline_v2 as fcp
@@ -188,7 +189,11 @@ def main():
     print(f"  Organizing zip packages from {zip_input_dir} into {raw_root}...")
     run_organize_step(zip_input_dir, raw_root)
 
-    analysed_root = raw_root.parent / "Analysed_data"
+    # Part 0 already asked where the organized data should land, so the raw root
+    # is settled -- resolve() takes it as given and only settles the other two,
+    # saving all three so the standalone scripts see the same locations.
+    raw_root, analysed_root, atlases_dir = project_paths.resolve(
+        project_paths.ANAT_ATLAS_FILES, raw_root=raw_root)
     anat_log = csa.load_analysis_log(analysed_root)
     fc_log = fcp.load_analysis_log(analysed_root)
 
@@ -236,7 +241,6 @@ def main():
     thickness_path = thickness_matches[0]
     myelin_path = myelin_matches[0]
 
-    atlases_dir = csa.find_atlases_dir(raw_root)  # requires all 3 files -- covers both analyses
     atlas_path = atlases_dir / "schaefer400_tianS1.dlabel.nii"
     hcpex_path = atlases_dir / "HCPex_2mm.nii"
     hcpex_lut_path = atlases_dir / "HCPex_LookUpTable.txt"
@@ -279,14 +283,17 @@ def main():
     csa.plot_key_volumes(volume_rows, anat_out_dir, subject.name, session.name)
     csa.plot_midbrain_bf_volumes(name_to_id, standard_rows, native_rows, anat_out_dir, subject.name, session.name)
     csa.plot_thickness_myelin_summary(thickness_rows, myelin_rows, anat_out_dir, subject.name, session.name)
-    if grouping:
-        _files, summaries = csa.save_combined_measures(
-            anat_out_dir, grouping, subject.name, session.name,
-            thickness_rows, thickness_counts, myelin_rows, myelin_counts,
-            volume_rows, name_to_id, standard_rows, native_rows)
-        print("  Combined-region copies written:")
-        for line in summaries:
-            print(f"    {line}")
+    hemi_files = csa.save_hemisphere_measures(
+        anat_out_dir, thickness_rows, myelin_rows, volume_rows,
+        name_to_id, standard_rows, native_rows)
+    print(f"  Hemisphere copies written: {len(hemi_files)} file(s)")
+    _files, summaries = csa.save_combined_measures(
+        anat_out_dir, region_grouping.DEFAULT_SPEC, subject.name, session.name,
+        thickness_rows, thickness_counts, myelin_rows, myelin_counts,
+        volume_rows, name_to_id, standard_rows, native_rows)
+    print("  Combined-region copies written:")
+    for line in summaries:
+        print(f"    {line}")
 
     csa.write_manifest(anat_out_dir, subject.name, session.name, thickness_path, myelin_path,
                         wmparc_path, atlas_path, lut_path, voxel_vol_mm3,
@@ -308,16 +315,14 @@ def main():
     print("\n  -- Standard FC matrix -- pick parcels --")
     standard_selection = fcp.choose_parcels(all_names)
 
-    # One grouping question for the whole run: the same spec is applied to the
-    # anatomical measures (Schaefer / wmparc / HCPex name spaces) and to the
-    # standard FC matrix, each resolved in its own name space.
-    grouping = region_grouping.prompt_grouping(all_names)
+    # No grouping question: anatomical and functional results are both written
+    # as the same four fixed views (left / right / all / L+R combined).
 
     triangle_ts, triangle_names = fcp.build_triangle_ts(all_ts, all_names)
 
     print(f"\n  Computing all five analyses for {subject.name}/{session.name}...")
-    fcp.run_and_save_analysis(all_ts, all_names, standard_selection, func_out_dir, "standard_hcpex",
-                               subject.name, session.name, use_graph_plot=False)
+    fcp.run_standard_maps(all_ts, all_names, standard_selection, func_out_dir, "standard_hcpex",
+                          subject.name, session.name)
     fcp.run_and_save_analysis(all_ts, all_names, fcp.GRAPH_VTA, func_out_dir, "graph_vta_hcpex",
                                subject.name, session.name, use_graph_plot=True)
     fcp.run_and_save_analysis(all_ts, all_names, fcp.GRAPH_SN, func_out_dir, "graph_sn_hcpex",
@@ -326,10 +331,6 @@ def main():
                                subject.name, session.name, use_graph_plot=True)
     fcp.run_and_save_analysis(triangle_ts, triangle_names, fcp.TRIANGLE_SN, func_out_dir, "triangle_sn_hcpex",
                                subject.name, session.name, use_graph_plot=True)
-
-    if grouping:
-        fcp.run_grouped_analysis(all_ts, all_names, standard_selection, grouping, func_out_dir,
-                                  "standard_hcpex", subject.name, session.name)
 
     fcp.record_analysis(analysed_root, subject.name, session.name)
     print(f"  Saved to {func_out_dir}")
