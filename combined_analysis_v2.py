@@ -58,11 +58,9 @@ Requires:
   HCPex_2mm.nii, HCPex_LookUpTable.txt under <raw root>/atlases/,
   FreeSurferColorLUT.txt, and FSL's applywarp on PATH.
 """
-import csv
 import sys
 import tempfile
 import traceback
-from datetime import datetime
 from pathlib import Path
 
 import cross_sectional_analysis_v2 as csa
@@ -120,48 +118,51 @@ def prompt_organize_output_dir():
 
 
 def run_organize_step(zip_input_dir, raw_root):
-    """Reuses organize_hcp_data.py's own per-zip extraction/manifest logic
-    unchanged (process_zip, MANIFEST_FIELDS) -- same behavior as running
+    """Reuses organize_hcp_data.py's own per-zip extraction/logging logic
+    unchanged (process_zip, RunLog) -- same behavior as running
     organize_hcp_data.py directly with --input=zip_input_dir --output=raw_root.
 
-    Unlike the standalone script's own main() loop, each zip runs in its own
-    try/except -- a transient failure reading one zip (e.g. an I/O error off
-    a network-mounted raw-data volume) shouldn't abort the whole combined
-    run before it ever reaches the subject/session picker and the anat/func
-    analysis. The failure happens during extract_zip()'s staging-directory
-    extraction, before merge_tree() ever touches the real target folder, so
-    the zip is safe to retry on a later run -- nothing partial is left in
-    <raw root>/sub-*/ses-*/."""
+    Since 2026-08-19 process_zip() isolates per-zip failures itself: a corrupt,
+    truncated or unreadable zip is classified, recorded and skipped rather than
+    raised, so the combined run always reaches the subject/session picker and
+    the anat/func analysis. The outer try/except is kept as a backstop for
+    anything process_zip() does not classify. A failure happens during
+    extract_zip()'s staging-directory extraction, before merge_tree() ever
+    touches the real target folder, so the zip is safe to retry on a later run
+    -- nothing partial is left in <raw root>/sub-*/ses-*/.
+
+    Records go to <raw root>/manifest.csv (8-column, unchanged) and
+    <raw root>/run_log.json (full detail), flushed after every zip."""
     archive_dir = raw_root / "archive"
-    zip_files = sorted(zip_input_dir.glob("*.zip"))
+    # "._*" are macOS AppleDouble sidecars (exFAT/network volumes), not packages.
+    zip_files = sorted(p for p in zip_input_dir.glob("*.zip")
+                       if not p.name.startswith("._"))
     if not zip_files:
         print(f"  No .zip files found in {zip_input_dir} -- nothing to organize.")
         return
 
-    manifest_rows = []
+    log = ohd.RunLog(raw_root, want_excel=False)
     conflicts = []
-    for zip_path in zip_files:
-        try:
-            ohd.process_zip(zip_path, raw_root, archive_dir, manifest_rows, conflicts, dry_run=False)
-        except Exception as exc:
-            print(f"  [ERROR] {zip_path.name} -- {exc}")
-            traceback.print_exc()
-            parsed = ohd.parse_zip_filename(zip_path.name)
-            subject, visit, modality_raw, target_folder = parsed if parsed else ("", "", "", "")
-            manifest_rows.append({
-                "subject": subject, "visit": visit, "modality": modality_raw,
-                "target_folder": target_folder or "", "zip_filename": zip_path.name,
-                "status": "error_exception", "target_path": "",
-                "timestamp": datetime.now().isoformat(timespec="seconds"),
-            })
+    try:
+        for zip_path in zip_files:
+            try:
+                ohd.process_zip(zip_path, raw_root, archive_dir, log, conflicts,
+                                dry_run=False, verify_md5=False)
+            except Exception as exc:
+                print(f"  [ERROR] {zip_path.name} -- {exc}")
+                traceback.print_exc()
+                parsed = ohd.parse_zip_filename(zip_path.name)
+                subject, visit, modality_raw, target_folder = parsed if parsed else ("", "", "", "")
+                log.add(subject=subject, visit=visit, modality=modality_raw,
+                        target_folder=target_folder or "", zip_filename=zip_path.name,
+                        zip_path=str(zip_path), status="error_exception",
+                        target_path="", stage="process_zip",
+                        error_type=ohd.error_type_name(exc), error_message=str(exc))
+    finally:
+        log.close()
 
-    manifest_path = raw_root / "manifest.csv"
-    file_exists = manifest_path.exists()
-    with open(manifest_path, "a", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=ohd.MANIFEST_FIELDS)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerows(manifest_rows)
+    manifest_rows = log.records
+    manifest_path = log.manifest_path
 
     if conflicts:
         conflicts_path = raw_root / "conflicts.log"
@@ -178,6 +179,16 @@ def run_organize_step(zip_input_dir, raw_root):
     )
     print(f"  extracted={extracted} skipped={skipped} errors={errors}")
     print(f"  Manifest written to {manifest_path}")
+    print(f"  Full record written to {log.json_path}")
+
+    failures = [r for r in manifest_rows
+                if r["status"].startswith("error")
+                or r["status"] in ("unrecognized_filename", "unknown_modality")]
+    if failures:
+        print(f"  {len(failures)} file(s) need attention:")
+        for r in failures:
+            print(f"    - {r['zip_filename']}: {r['status']}"
+                  f" ({r.get('error_message') or r['status']})")
 
 
 def main():
