@@ -329,19 +329,12 @@ def main():
     # No grouping question: anatomical and functional results are both written
     # as the same four fixed views (left / right / all / L+R combined).
 
-    triangle_ts, triangle_names = fcp.build_triangle_ts(all_ts, all_names)
 
     print(f"\n  Computing all five analyses for {subject.name}/{session.name}...")
     fcp.run_standard_maps(all_ts, all_names, standard_selection, func_out_dir, "standard_hcpex",
                           subject.name, session.name)
-    fcp.run_and_save_analysis(all_ts, all_names, fcp.GRAPH_VTA, func_out_dir, "graph_vta_hcpex",
-                               subject.name, session.name, use_graph_plot=True)
-    fcp.run_and_save_analysis(all_ts, all_names, fcp.GRAPH_SN, func_out_dir, "graph_sn_hcpex",
-                               subject.name, session.name, use_graph_plot=True)
-    fcp.run_and_save_analysis(triangle_ts, triangle_names, fcp.TRIANGLE_VTA, func_out_dir, "triangle_vta_hcpex",
-                               subject.name, session.name, use_graph_plot=True)
-    fcp.run_and_save_analysis(triangle_ts, triangle_names, fcp.TRIANGLE_SN, func_out_dir, "triangle_sn_hcpex",
-                               subject.name, session.name, use_graph_plot=True)
+    fcp.run_fixed_analyses(all_ts, all_names, standard_selection, func_out_dir,
+                           subject.name, session.name)
 
     fcp.record_analysis(analysed_root, subject.name, session.name)
     print(f"  Saved to {func_out_dir}")

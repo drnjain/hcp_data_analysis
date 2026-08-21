@@ -489,6 +489,50 @@ def combine_weights(weights, grouping):
 
 # ---------------------------------------------------------- interactive use
 
+def order_by_region_pairs(selected_names):
+    """Reorder a selection so each region's left and right sit together, left
+    first: Hippocampus_L, Hippocampus_R, SNc_L, SNc_R, ...
+
+    Without this the matrix follows HCPex label order, which puts every left
+    parcel first and every right parcel 300+ labels later (Hippocampus_L is 80,
+    Hippocampus_R is 260) -- so a region's two halves land at opposite corners
+    of the heatmap and cannot be compared by eye.
+
+    Regions appear in the order they were FIRST selected, so the user's own
+    ordering still drives the layout. A region with only one hemisphere picked
+    keeps its place; an unlateralised structure (Brain-Stem) does too."""
+    order, groups = [], {}
+    for name in selected_names:
+        base, hemi = split_hemisphere(name)
+        key = base.lower() if hemi else f"\0{name}"  # HCPex ships one case-mismatched pair
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append((hemi, name))
+
+    out = []
+    for key in order:
+        members = groups[key]
+        # L before R; anything unlateralised keeps its relative order after them
+        out.extend(n for h, n in sorted(
+            members, key=lambda hn: {"L": 0, "R": 1}.get(hn[0], 2)))
+    return out
+
+
+def is_plain_lr(grouping):
+    """True when a Grouping (or spec) is just the built-in left/right rule.
+
+    Callers write the L/R-combined view unconditionally, so a user-supplied
+    grouping that IS plain lr would only duplicate it. Matches on the first
+    token of Grouping.source, which reads 'lr (automatic left/right pairs)'
+    rather than a bare 'lr'. 'lr-index' is deliberately NOT plain lr -- it
+    asserts index pairings the atlas does not define."""
+    if grouping is None:
+        return False
+    source = str(getattr(grouping, "source", grouping)).strip().lower()
+    return source.split()[0] == "lr" if source else False
+
+
 def prompt_grouping(names, prompt_fn=input):
     """Terminal picker used by the interactive scripts. Returns a Grouping or
     None. Kept here so every script asks the question the same way."""

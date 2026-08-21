@@ -12,14 +12,20 @@ Prompts for:
 
 Every run always computes five analyses for the chosen session, same as v2:
   - "standard"     -- FC matrix over whatever parcels you pick above
-  - "graph_vta"    -- fixed NbM <-> VTA <-> Hippocampus graph, left/right separate
-  - "graph_sn"     -- fixed NbM <-> SN <-> Hippocampus graph, left/right separate
+  - "graph_vta"    -- NbM <-> VTA <-> Hippocampus graph, left/right separate
+  - "graph_sn"     -- NbM <-> SN <-> Hippocampus graph, left/right separate
   - "triangle_vta" -- same 3 regions as graph_vta, but left/right pairs are
                        first averaged into one composite timeseries each, so
                        it's a plain 3-node triangle (NbM, VTA, Hippocampus)
-  - "triangle_sn"  -- same idea for SN: SNpc+SNpr averaged into one "SN" node,
-                       NbM and Hippocampus averaged the same way as above,
-                       giving a plain 3-node triangle (NbM, SN, Hippocampus)
+  - "triangle_sn"  -- same idea for SN, giving a plain 3-node triangle
+                       (NbM, SN, Hippocampus)
+
+The last four take their nodes from the SAME parcel selection you pick above --
+they are restricted to it, never extended past it. Deselect SNpr and graph_sn
+drops it; the triangle's SN node is then built from SNpc alone and is named
+"SNc" accordingly, because a node label should not claim more than the
+timeseries behind it. An analysis left with fewer than two of its regions is
+skipped rather than written as a degenerate matrix.
 All five are saved into <results root>/<subject>/<session>/func/, suffixed with
 "_hcpex" (e.g. fc_matrix_corr_standard_hcpex.csv) -- mirroring the anat/
 subfolder cross_sectional_analysis_v2.py uses for its own outputs.
@@ -114,7 +120,19 @@ CARD_COLORS = {  # purely cosmetic per-group accent, unrelated to the analysis-c
     "A": (90, 160, 250),
 }
 
-# Analysis 2/3: fixed node sets for the graph plots, left/right kept separate
+# Analyses 2-5 name every node they COULD use; which of them are actually drawn
+# is decided by the parcel picker, via restrict_fixed_set() / build_triangle_ts()
+# below. These lists are a superset, not a fixed set.
+#
+# This used to be otherwise: they were passed to run_and_save_analysis() verbatim
+# alongside the full 426-parcel timeseries, so graph_sn and triangle_sn contained
+# substantia nigra pars reticulata whether or not it was picked. Every session
+# analysed up to 2026-08-20 was run that way -- all 1,874 of them chose SNpc
+# without SNpr and got SNpr in those two outputs regardless. The picker is the
+# single source of truth for which parcels enter an analysis; nothing downstream
+# may add to it.
+
+# Analysis 2/3: node sets for the graph plots, left/right kept separate
 # (HCPex lateralizes VTA and SNpc/SNpr, unlike CIT168 -- no averaging here).
 GRAPH_VTA = ["Ventral_tegmenta_area_L", "Ventral_tegmenta_area_R",
              "Nuclei_basal_L", "Nuclei_basal_R", "Hippocampus_L", "Hippocampus_R"]
@@ -127,11 +145,12 @@ GRAPH_DISPLAY = {  # node label only -- no atlas/source text on the diagram
     "Hippocampus_L": "HC (L)", "Hippocampus_R": "HC (R)",
     "Substantia_nigra_pars_compacta_L": "SNc (L)", "Substantia_nigra_pars_compacta_R": "SNc (R)",
     "Substantia_nigra_pars_reticulata_L": "SNr (L)", "Substantia_nigra_pars_reticulata_R": "SNr (R)",
-    "NbM": "NbM", "Hippocampus": "HC", "SN": "SN", "VTA": "VTA",
+    "NbM": "NbM", "Hippocampus": "HC", "SN": "SN", "SNc": "SNc", "SNr": "SNr", "VTA": "VTA",
 }
 
 # Analysis 4/5: simple 3-node triangles -- every composite region here is an
-# average of its listed parts (left/right, and for SN also SNpc+SNpr).
+# average of the listed parts that SURVIVE the picker (left/right, and for SN
+# also SNpc+SNpr when both are picked).
 TRIANGLE_COMBINE_MAP = {
     "NbM": ["Nuclei_basal_L", "Nuclei_basal_R"],
     "Hippocampus": ["Hippocampus_L", "Hippocampus_R"],
@@ -141,6 +160,36 @@ TRIANGLE_COMBINE_MAP = {
 }
 TRIANGLE_VTA = ["NbM", "VTA", "Hippocampus"]
 TRIANGLE_SN = ["NbM", "SN", "Hippocampus"]
+
+# A composite whose surviving parts all belong to one anatomical family is named
+# for that family instead of the umbrella key: pick SNpc without SNpr and the
+# node is "SNc", not an "SN" that quietly means compacta. Parts with no entry
+# here (NbM, hippocampus, VTA) leave their composite named by its key.
+PART_FAMILY = {
+    "Substantia_nigra_pars_compacta_L": "SNc",
+    "Substantia_nigra_pars_compacta_R": "SNc",
+    "Substantia_nigra_pars_reticulata_L": "SNr",
+    "Substantia_nigra_pars_reticulata_R": "SNr",
+}
+
+
+def composite_name(key, parts):
+    """Display name for a composite built from `parts` -- the family name when
+    every surviving part shares one, otherwise the umbrella key."""
+    families = {PART_FAMILY.get(p) for p in parts}
+    if len(families) == 1 and None not in families:
+        return families.pop()
+    return key
+
+
+def restrict_fixed_set(fixed_names, selected_names):
+    """The nodes of a fixed analysis that the picker actually selected, in the
+    fixed set's own order. Returns [] when fewer than two survive -- a one-node
+    'graph' has no edges, so the caller skips the analysis rather than writing a
+    1x1 matrix."""
+    selected = set(selected_names)
+    kept = [n for n in fixed_names if n in selected]
+    return kept if len(kept) >= 2 else []
 
 # Above this many nodes the circular graph becomes an unreadable hairball, so the
 # extra graph view of a combined analysis is only drawn for small region sets.
@@ -663,19 +712,54 @@ def plot_graph(corr, names, out_dir, title, suffix):
     plt.close(fig)
 
 
-def build_triangle_ts(all_ts, all_names):
-    """Average each TRIANGLE_COMBINE_MAP entry's parts into one composite
-    timeseries per region (NbM, Hippocampus, VTA, SN). Returns (triangle_ts,
-    triangle_names) with the same shape convention as (all_ts, all_names),
-    ready to feed into run_and_save_analysis() with TRIANGLE_VTA/TRIANGLE_SN
-    as the selection."""
+def build_triangle_ts(all_ts, all_names, selected_names):
+    """Average each TRIANGLE_COMBINE_MAP entry's picked parts into one composite
+    timeseries per region. Returns (triangle_ts, triangle_names, triangle_parts)
+    -- the first two with the same shape convention as (all_ts, all_names), ready
+    to feed into run_and_save_analysis() with TRIANGLE_VTA/TRIANGLE_SN as the
+    selection, and the third mapping each composite to the parcels that went into
+    it, for provenance in region_names_<suffix>.txt.
+
+    Only parts in `selected_names` are averaged: a composite is exactly as wide
+    as the picker allows. A composite left with no picked parts is dropped, and
+    one whose survivors share an anatomical family is renamed after it (SN built
+    from compacta alone becomes SNc), so a node label never claims more than the
+    timeseries behind it.
+
+    TRIANGLE_VTA/TRIANGLE_SN reference composites by their umbrella key, so pass
+    the returned names through restrict_fixed_set() -- which matches on the
+    renamed nodes -- rather than assuming a key survived."""
     name_to_col = {n: i for i, n in enumerate(all_names)}
-    columns, names = [], []
-    for combined_name, parts in TRIANGLE_COMBINE_MAP.items():
-        cols = [name_to_col[p] for p in parts]
+    selected = set(selected_names)
+    columns, names, parts_used = [], [], {}
+    for key, parts in TRIANGLE_COMBINE_MAP.items():
+        kept = [p for p in parts if p in selected and p in name_to_col]
+        if not kept:
+            continue
+        cols = [name_to_col[p] for p in kept]
         columns.append(all_ts[:, cols].mean(axis=1))
-        names.append(combined_name)
-    return np.stack(columns, axis=1), names
+        name = composite_name(key, kept)
+        names.append(name)
+        parts_used[name] = kept
+    if not columns:
+        return np.empty((all_ts.shape[0], 0)), [], {}
+    return np.stack(columns, axis=1), names, parts_used
+
+
+def restrict_triangle(fixed_names, triangle_names):
+    """restrict_fixed_set() for the triangles, tolerating the composite rename.
+
+    TRIANGLE_SN asks for 'SN'; build_triangle_ts may have produced 'SNc' or 'SNr'
+    instead. Match on the umbrella key so the analysis still runs, and keep the
+    order TRIANGLE_* declares."""
+    by_key = {}
+    for name in triangle_names:
+        by_key.setdefault(name, name)
+        for key, parts in TRIANGLE_COMBINE_MAP.items():
+            if name == key or name in {PART_FAMILY.get(p) for p in parts}:
+                by_key.setdefault(key, name)
+    kept = [by_key[n] for n in fixed_names if n in by_key]
+    return kept if len(kept) >= 2 else []
 
 
 def run_grouped_analysis(all_ts, all_names, selected_names, grouping, out_dir, suffix,
@@ -736,11 +820,24 @@ def run_grouped_analysis(all_ts, all_names, selected_names, grouping, out_dir, s
 
 
 def run_and_save_analysis(all_ts, all_names, selected_names, out_dir, suffix,
-                           subject_name, session_name, use_graph_plot):
+                           subject_name, session_name, use_graph_plot, parts_map=None):
     """Compute the FC matrix for selected_names and save every output into
     out_dir with suffix appended to the filename, so the standard analysis
-    and both fixed graph analyses can share one folder without clobbering
-    each other's files (or v1/v2's, thanks to the _hcpex suffix)."""
+    and both graph analyses can share one folder without clobbering
+    each other's files (or v1/v2's, thanks to the _hcpex suffix).
+
+    `parts_map` names the parcels behind each composite node (from
+    build_triangle_ts). When given, region_names_<suffix>.txt gains a third
+    tab-separated column listing them, and the provenance block is taken from a
+    part rather than from the composite's own name -- 'NbM' is not a parcel and
+    would otherwise fall through parcel_block() to the cortex default.
+
+    An empty selected_names means the picker left too few nodes for this
+    analysis; nothing is written and the caller is told."""
+    if not selected_names:
+        print(f"  [{suffix}] skipped — fewer than two of its regions were selected")
+        return False
+
     name_to_idx = {n: i for i, n in enumerate(all_names)}
     cols = [name_to_idx[n] for n in selected_names]
     ts = all_ts[:, cols]
@@ -751,9 +848,12 @@ def run_and_save_analysis(all_ts, all_names, selected_names, out_dir, suffix,
 
     save_matrix_csv(out_dir / f"fc_matrix_corr_{suffix}.csv", corr, selected_names)
     save_matrix_csv(out_dir / f"fc_matrix_fisherz_{suffix}.csv", fisher_z, selected_names)
-    (out_dir / f"region_names_{suffix}.txt").write_text(
-        "\n".join(f"{n}\t{parcel_block(n)}" for n in selected_names)
-    )
+    lines = []
+    for n in selected_names:
+        parts = (parts_map or {}).get(n)
+        block = parcel_block(parts[0]) if parts else parcel_block(n)
+        lines.append(f"{n}\t{block}" + (f"\t{', '.join(parts)}" if parts else ""))
+    (out_dir / f"region_names_{suffix}.txt").write_text("\n".join(lines))
 
     plot_title = f"{subject_name} / {session_name} — Functional Connectivity, {suffix} ({len(selected_names)} parcels)"
     if use_graph_plot:
@@ -763,6 +863,37 @@ def run_and_save_analysis(all_ts, all_names, selected_names, out_dir, suffix,
 
     print(f"  [{suffix}] {len(selected_names)} parcels -> fc_matrix_corr_{suffix}.csv, "
           f"fc_matrix_fisherz_{suffix}.csv, fc_matrix_{suffix}.png/.svg, region_names_{suffix}.txt")
+    return True
+
+
+def run_fixed_analyses(all_ts, all_names, standard_selection, out_dir,
+                       subject_name, session_name):
+    """Analyses 2-5 (graph_vta, graph_sn, triangle_vta, triangle_sn), each
+    restricted to what the picker selected.
+
+    Every caller ran this identical four-call block -- the interactive script,
+    both batch drivers, combined_analysis_v2 and the browser app's pipeline.py --
+    which is how they stayed out of step with the picker in five places at once.
+    They now share this one function, so a change to what the fixed analyses emit
+    cannot reach four of them and miss the fifth."""
+    triangle_ts, triangle_names, triangle_parts = build_triangle_ts(
+        all_ts, all_names, standard_selection)
+    run_and_save_analysis(all_ts, all_names,
+                          restrict_fixed_set(GRAPH_VTA, standard_selection),
+                          out_dir, "graph_vta_hcpex", subject_name, session_name,
+                          use_graph_plot=True)
+    run_and_save_analysis(all_ts, all_names,
+                          restrict_fixed_set(GRAPH_SN, standard_selection),
+                          out_dir, "graph_sn_hcpex", subject_name, session_name,
+                          use_graph_plot=True)
+    run_and_save_analysis(triangle_ts, triangle_names,
+                          restrict_triangle(TRIANGLE_VTA, triangle_names),
+                          out_dir, "triangle_vta_hcpex", subject_name, session_name,
+                          use_graph_plot=True, parts_map=triangle_parts)
+    run_and_save_analysis(triangle_ts, triangle_names,
+                          restrict_triangle(TRIANGLE_SN, triangle_names),
+                          out_dir, "triangle_sn_hcpex", subject_name, session_name,
+                          use_graph_plot=True, parts_map=triangle_parts)
 
 
 def split_hemispheres(selected_names):
@@ -888,19 +1019,12 @@ def main():
     # The non-interactive --groups flag still exists on the batch drivers for an
     # ADDITIONAL grouping (component, custom JSON) on top of those four.
 
-    triangle_ts, triangle_names = build_triangle_ts(all_ts, all_names)
 
     print(f"\n== Computing all five analyses for {subject.name}/{session.name} ==")
     run_standard_maps(all_ts, all_names, standard_selection, out_dir, "standard_hcpex",
                       subject.name, session.name)
-    run_and_save_analysis(all_ts, all_names, GRAPH_VTA, out_dir, "graph_vta_hcpex",
-                           subject.name, session.name, use_graph_plot=True)
-    run_and_save_analysis(all_ts, all_names, GRAPH_SN, out_dir, "graph_sn_hcpex",
-                           subject.name, session.name, use_graph_plot=True)
-    run_and_save_analysis(triangle_ts, triangle_names, TRIANGLE_VTA, out_dir, "triangle_vta_hcpex",
-                           subject.name, session.name, use_graph_plot=True)
-    run_and_save_analysis(triangle_ts, triangle_names, TRIANGLE_SN, out_dir, "triangle_sn_hcpex",
-                           subject.name, session.name, use_graph_plot=True)
+    run_fixed_analyses(all_ts, all_names, standard_selection, out_dir,
+                       subject.name, session.name)
 
     record_analysis(analysed_root, subject.name, session.name)
 

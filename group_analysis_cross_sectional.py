@@ -78,6 +78,7 @@ import matplotlib.pyplot as plt
 from scipy import stats as spstats
 
 import cross_sectional_analysis_v2 as csa
+import project_paths
 import region_grouping
 
 MEASURES = {
@@ -466,6 +467,7 @@ def main():
     ap.add_argument("--measures", default="all", choices=list(MEASURE_GROUPS), help="which extracted measures to test")
     ap.add_argument("--alpha", type=float, default=0.05, help="FDR q-value threshold (default 0.05)")
     ap.add_argument("--subjects", help="comma-separated subject folder names to restrict to")
+    ap.add_argument("--analysed-root", help="where results were written (default: saved path, else <raw root>/../Analysed_data)")
     ap.add_argument("--groups", default=region_grouping.DEFAULT_SPEC,
                      help="ALSO run every mode over composite regions, into "
                           "<mode>_combined/ beside the per-region results (default: lr, "
@@ -482,10 +484,12 @@ def main():
     except ValueError as exc:
         sys.exit(f"--groups: {exc}")
 
-    raw_root = Path(args.raw_root).expanduser() if args.raw_root else csa.find_data_root()
-    if not raw_root.is_dir():
-        sys.exit(f"'{raw_root}' is not a directory")
-    analysed_root = raw_root.parent / "Analysed_data"
+    # need_atlases=False: this script only reads the results tree and the
+    # demographics CSV, so requiring an atlases folder would block a valid run
+    # on a machine that holds results but no atlases.
+    raw_root, analysed_root, _ = project_paths.resolve(
+        (), raw_root=args.raw_root, analysed_root=args.analysed_root,
+        need_atlases=False)
     subject_filter = set(s.strip() for s in args.subjects.split(",")) if args.subjects else None
     modes = [m.strip() for m in args.modes.split(",")]
 
